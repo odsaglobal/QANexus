@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ATIP.Api/ATIP.Api.csproj" />
+    <Project Path="src/ATIP.Application/ATIP.Application.csproj" />
+    <Project Path="src/ATIP.Domain/ATIP.Domain.csproj" />
+    <Project Path="src/ATIP.Infrastructure/ATIP.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ATIP.Application.Tests/ATIP.Application.Tests.csproj" />
+  </Folder>
+</Solution>

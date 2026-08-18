@@ -1,0 +1,63 @@
+import { Navigate, Route, Routes } from 'react-router-dom';
+import { ProtectedRoute } from './components/ProtectedRoute';
+import { AppLayout } from './components/AppLayout';
+import { LoginPage } from './pages/LoginPage';
+import { RegisterPage } from './pages/RegisterPage';
+import { DashboardPage } from './pages/DashboardPage';
+import { ProjectsPage } from './pages/ProjectsPage';
+import { ProjectDetailPage } from './pages/ProjectDetailPage';
+import { ProjectTabRedirect } from './components/ProjectTabRedirect';
+import { LocatorsPage } from './pages/LocatorsPage';
+import { ExecutionsPage } from './pages/ExecutionsPage';
+import { ReportsPage } from './pages/ReportsPage';
+import { AgentsPage } from './pages/AgentsPage';
+import { SettingsPage } from './pages/SettingsPage';
+import { TestDataPage } from './pages/TestDataPage';
+import { AiInsightsPage } from './pages/AiInsightsPage';
+import { AdministrationPage } from './pages/AdministrationPage';
+
+export function App() {
+  return (
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/register" element={<RegisterPage />} />
+
+      <Route
+        element={
+          <ProtectedRoute>
+            <AppLayout />
+          </ProtectedRoute>
+        }
+      >
+        <Route path="/" element={<DashboardPage />} />
+        <Route path="/projects" element={<ProjectsPage />} />
+        <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
+        <Route path="/projects/:projectId/:tab" element={<ProjectDetailPage />} />
+        <Route
+          path="/requirements"
+          element={<ProjectTabRedirect title="Requirement Intelligence" tab="requirements" />}
+        />
+        <Route
+          path="/scenarios"
+          element={<ProjectTabRedirect title="Scenario Explorer" tab="scenarios" />}
+        />
+        <Route
+          path="/knowledge-graph"
+          element={<ProjectTabRedirect title="Knowledge Graph" tab="graph" />}
+        />
+        <Route path="/explorer" element={<ProjectTabRedirect title="Page Explorer" tab="explorer" />} />
+        <Route path="/suites" element={<ProjectTabRedirect title="Test Suites" tab="suites" />} />
+        <Route path="/locators" element={<LocatorsPage />} />
+        <Route path="/executions" element={<ExecutionsPage />} />
+        <Route path="/reports" element={<ReportsPage />} />
+        <Route path="/test-data" element={<TestDataPage />} />
+        <Route path="/ai-insights" element={<AiInsightsPage />} />
+        <Route path="/agents" element={<AgentsPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/administration" element={<AdministrationPage />} />
+      </Route>
+
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  );
+}
