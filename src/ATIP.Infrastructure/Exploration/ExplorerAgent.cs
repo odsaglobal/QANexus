@@ -2,7 +2,9 @@ using System.Text;
 using System.Text.Json;
 using ATIP.Application.Common.Interfaces;
 using ATIP.Application.Common.Utilities;
+using ATIP.Application.Features.Environments.Dtos;
 using ATIP.Application.Features.Explorer.Agent;
+using ATIP.Application.Features.Scenarios.Common;
 using ATIP.Application.Features.Scenarios.Dtos;
 using ATIP.Domain.Entities;
 using ATIP.Domain.Enums;
@@ -32,6 +34,19 @@ public sealed class ExplorerAgent : IExplorerAgent
     private readonly PlaywrightMcpOptions _mcp;
     private readonly ILogger<ExplorerAgent> _logger;
 
+    /// <summary>
+    /// Postman-style variables resolved from the environment's test data. Any <c>{{key}}</c> token in a
+    /// scenario step / mission is replaced with the matching value before the agent acts, so steps like
+    /// "enter {{username}}" automatically use this environment's data. Populated per run in RunAsync.
+    /// </summary>
+    private Dictionary<string, string?> _variables = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Project business-context document text injected into exploration missions (per run).</summary>
+    private string _businessContext = string.Empty;
+
+    private static readonly System.Text.RegularExpressions.Regex VariableTokenRegex =
+        new(@"\{\{\s*([^{}]+?)\s*\}\}", System.Text.RegularExpressions.RegexOptions.Compiled);
+
     public ExplorerAgent(
         IApplicationDbContext db,
         ILlmClient llm,
@@ -60,6 +75,12 @@ public sealed class ExplorerAgent : IExplorerAgent
         var baseUrl = (session.SeedUrl ?? environment.BaseUrl).TrimEnd('/');
         var seedUri = new Uri(baseUrl);
         var origin = $"{seedUri.Scheme}://{seedUri.Host}{(seedUri.Port is 80 or 443 ? "" : $":{seedUri.Port}")}";
+
+        // Bind Postman-style variables from this environment's test data ({{key}} → value).
+        _variables = await LoadEnvironmentVariablesAsync(session, cancellationToken);
+
+        // Load the project's business-context documents so the AI understands the app's domain.
+        _businessContext = await ScenarioBucket.LoadBusinessContextAsync(_db, session.ProjectId, cancellationToken);
 
         // When configured, scenario/suite runs are driven by the official Playwright MCP server.
         if (_mcp.Enabled && (session.ScenarioId is not null || session.SuiteId is not null))
@@ -195,6 +216,10 @@ public sealed class ExplorerAgent : IExplorerAgent
             await mcp.NavigateAsync(baseUrl, ct);
             await mcp.StabilizePageAsync(ct);
             await PublishLogAsync(session, $"→ Navigated to {baseUrl}", "info", ct);
+            if (_variables.Count > 0)
+            {
+                await PublishLogAsync(session, $"Bound {_variables.Count} test-data variable(s) from this environment (use as {{{{name}}}} in steps).", "info", ct);
+            }
 
             foreach (var scenario in scenarios)
             {
@@ -319,6 +344,7 @@ public sealed class ExplorerAgent : IExplorerAgent
                 continue;
             }
 
+            decision.Value = ResolveVarsOrNull(decision.Value);
             var action = decision.Action?.Trim().ToLowerInvariant();
 
             if (decision.StepComplete || action == "finish" || decision.StepFailed)
@@ -391,7 +417,9 @@ public sealed class ExplorerAgent : IExplorerAgent
             return (true, "no explicit expected outcome");
         }
 
-        if (McpMatchesExpected(snapshot, url, step.ExpectedResult))
+        var expectedResult = ResolveVars(step.ExpectedResult);
+
+        if (McpMatchesExpected(snapshot, url, expectedResult))
         {
             return (true, "expected text present on the page");
         }
@@ -408,7 +436,7 @@ public sealed class ExplorerAgent : IExplorerAgent
                 + "(e.g. a visible login dialog satisfies 'login popup is displayed'). "
                 + "Respond ONLY with JSON: {\"satisfied\": true|false, \"reason\": \"short explanation\"}.";
             var snap = snapshot.Length > 6000 ? snapshot[..6000] : snapshot;
-            var user = $"Step action: {step.Action}\nExpected outcome: {step.ExpectedResult}\nCurrent URL: {url}\n\nPage snapshot:\n{snap}";
+            var user = $"Step action: {ResolveVars(step.Action)}\nExpected outcome: {expectedResult}\nCurrent URL: {url}\n\nPage snapshot:\n{snap}";
             var raw = await _llm.CompleteAsync(system, user, jsonMode: true, ct);
             var json = JsonExtraction.ExtractJsonObject(raw);
             var judged = JsonSerializer.Deserialize<OutcomeJudgement>(json, JsonOpts);
@@ -640,7 +668,7 @@ public sealed class ExplorerAgent : IExplorerAgent
         List<ScenarioStep> hintSteps,
         CancellationToken ct)
     {
-        var mission = BuildScenarioMission(scenario, hintSteps);
+        var mission = AppendBusinessContext(BuildScenarioMission(scenario, hintSteps));
         var missionStep = new ScenarioStep { ScenarioId = scenario.Id, Order = 0, Action = mission, ExpectedResult = scenario.ExpectedResult };
 
         // Real sites often gate the page behind a login/OTP, cookie, location or promo modal that
@@ -673,6 +701,7 @@ public sealed class ExplorerAgent : IExplorerAgent
                 continue;
             }
 
+            decision.Value = ResolveVarsOrNull(decision.Value);
             var action = decision.Action?.Trim().ToLowerInvariant();
 
             if (decision.StepComplete || action == "finish" || decision.StepFailed)
@@ -772,6 +801,102 @@ public sealed class ExplorerAgent : IExplorerAgent
             reachedGoal ? $"Scenario goal reached: {goalReason}" : $"Scenario goal not confirmed: {goalReason}",
             reachedGoal ? "success" : "warn",
             ct);
+    }
+
+    /// <summary>
+    /// Builds the {{key}} → value dictionary the agent binds per run. Sources, in precedence order:
+    /// (1) the environment's Postman-style key/value variables (Environment.VariablesJson);
+    /// (2) test data sets — each dataset's FIRST row supplies values, exposed bare (<c>{{username}}</c>,
+    /// first dataset wins) and dataset-qualified (<c>{{Checkout users.username}}</c>).
+    /// </summary>
+    private async Task<Dictionary<string, string?>> LoadEnvironmentVariablesAsync(
+        ExplorationSession session,
+        CancellationToken ct)
+    {
+        var vars = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            // (1) Environment key/value variables (highest precedence).
+            var environment = await _db.Environments
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(e => e.Id == session.EnvironmentId, ct);
+
+            if (!string.IsNullOrWhiteSpace(environment?.VariablesJson))
+            {
+                foreach (var kvp in EnvironmentVariableSerialization.ParseValues(environment.VariablesJson))
+                {
+                    vars[kvp.Key] = kvp.Value;
+                }
+            }
+
+            // (2) Test data sets (fill any gaps; qualified keys always added).
+            var sets = await _db.TestDataSets
+                .IgnoreQueryFilters()
+                .Where(d => d.EnvironmentId == session.EnvironmentId)
+                .ToListAsync(ct);
+
+            foreach (var set in sets)
+            {
+                var columns = JsonSerializer.Deserialize<List<string>>(set.ColumnsJson, JsonOpts) ?? [];
+                var rows = JsonSerializer.Deserialize<List<Dictionary<string, string?>>>(set.RowsJson, JsonOpts) ?? [];
+                var first = rows.FirstOrDefault();
+
+                foreach (var column in columns)
+                {
+                    var value = first is not null && first.TryGetValue(column, out var v) ? v : null;
+                    vars[$"{set.Name}.{column}"] = value;
+                    if (!vars.ContainsKey(column))
+                    {
+                        vars[column] = value;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to load variables for environment {EnvironmentId}.", session.EnvironmentId);
+        }
+
+        return vars;
+    }
+
+    /// <summary>Replaces <c>{{key}}</c> tokens with values bound from the environment's test data.
+    /// Unknown tokens are left as-is so they remain visible instead of silently blanking a field.</summary>
+    private string ResolveVars(string text)
+    {
+        if (string.IsNullOrEmpty(text) || _variables.Count == 0
+            || text.IndexOf("{{", StringComparison.Ordinal) < 0)
+        {
+            return text;
+        }
+
+        return VariableTokenRegex.Replace(text, match =>
+        {
+            var key = match.Groups[1].Value.Trim();
+            return _variables.TryGetValue(key, out var value) && value is not null ? value : match.Value;
+        });
+    }
+
+    private string? ResolveVarsOrNull(string? text) => text is null ? null : ResolveVars(text);
+
+    /// <summary>Appends the project's business-context documents to a mission so the AI can use domain knowledge.</summary>
+    private string AppendBusinessContext(string mission)
+    {
+        if (string.IsNullOrWhiteSpace(_businessContext))
+        {
+            return mission;
+        }
+
+        var sb = new StringBuilder(mission);
+        sb.AppendLine();
+        sb.AppendLine();
+        sb.AppendLine("Business context (domain knowledge about this application — use it to interpret the UI, "
+            + "understand terminology and make correct decisions; do NOT read it aloud or type it):");
+        sb.AppendLine("\"\"\"");
+        sb.Append(_businessContext);
+        sb.AppendLine();
+        sb.Append("\"\"\"");
+        return sb.ToString();
     }
 
     private static string BuildScenarioMission(Scenario scenario, List<ScenarioStep> hintSteps)
@@ -1303,6 +1428,7 @@ public sealed class ExplorerAgent : IExplorerAgent
         await browser.NavigateAsync(baseUrl, ct);
 
         const int maxTurns = 20;
+        var missionText = AppendBusinessContext(session.Prompt!);
         var history = new StringBuilder();
         var recorded = new List<(string Action, string? Expected)>();
         var missionOk = false;
@@ -1312,7 +1438,7 @@ public sealed class ExplorerAgent : IExplorerAgent
             var pageUrl = string.IsNullOrWhiteSpace(browser.CurrentUrl) ? baseUrl : browser.CurrentUrl;
             var snapshot = await browser.SnapshotForAgentAsync(60, ct);
 
-            var decision = await DecideMissionActionAsync(session.Prompt!, pageUrl, snapshot, history.ToString(), turn, maxTurns, ct);
+            var decision = await DecideMissionActionAsync(missionText, pageUrl, snapshot, history.ToString(), turn, maxTurns, ct);
             if (decision is null)
             {
                 history.AppendLine($"- turn {turn}: no decision returned; retrying.");
@@ -1860,7 +1986,7 @@ public sealed class ExplorerAgent : IExplorerAgent
         {
             var raw = await _llm.CompleteAsync(
                 StepAgentPrompts.System,
-                StepAgentPrompts.BuildUserPrompt(step.Action, step.ExpectedResult, pageUrl, snapshot, history, turn, maxTurns),
+                StepAgentPrompts.BuildUserPrompt(ResolveVars(step.Action), ResolveVarsOrNull(step.ExpectedResult), pageUrl, snapshot, history, turn, maxTurns),
                 jsonMode: true,
                 ct);
 

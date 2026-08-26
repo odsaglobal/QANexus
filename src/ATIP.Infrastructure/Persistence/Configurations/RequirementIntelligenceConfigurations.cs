@@ -104,6 +104,7 @@ public sealed class ScenarioConfiguration : IEntityTypeConfiguration<Scenario>
         builder.Property(s => s.Source).HasConversion<string>().HasMaxLength(40);
         builder.Property(s => s.Preconditions).HasMaxLength(2000);
         builder.Property(s => s.ExpectedResult).HasMaxLength(2000);
+        builder.Property(s => s.JiraKey).HasMaxLength(60);
         builder.Property(s => s.TagsJson).HasColumnType("jsonb");
         builder.Property(s => s.ProposedStepsJson).HasColumnType("jsonb");
         builder.Property(s => s.PreviousStepsJson).HasColumnType("jsonb");

@@ -18,6 +18,10 @@ public sealed record StartExplorationCommand : IRequest<ExplorationSessionDto>
     /// <summary>Optional: run and record results for just this one scenario.</summary>
     public Guid? ScenarioId { get; init; }
 
+    /// <summary>Optional: a free-text mission. When set, the agent autonomously performs the described
+    /// flow and records it as a new reusable scenario (found under the "AI Explorations" feature).</summary>
+    public string? Prompt { get; init; }
+
     /// <summary>Override the environment's base URL. Leave null to use the environment default.</summary>
     public string? SeedUrl { get; init; }
 

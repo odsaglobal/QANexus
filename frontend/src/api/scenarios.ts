@@ -1,5 +1,5 @@
 import { apiClient } from '../lib/apiClient';
-import type { ExplorationSession, KnowledgeGraph, Scenario, ScenarioRun } from './types';
+import type { ExplorationSession, JiraIssue, KnowledgeGraph, Scenario, ScenarioRun } from './types';
 
 export interface UpdateScenarioStepInput {
   action: string;
@@ -14,13 +14,20 @@ export interface UpdateScenarioPayload {
   risk: string;
   preconditions?: string;
   expectedResult?: string;
+  jiraKey?: string;
   tags?: string[];
   steps: UpdateScenarioStepInput[];
 }
 
+export async function getJiraIssue(projectId: string, issueKey: string): Promise<JiraIssue> {
+  const { data } = await apiClient.get<JiraIssue>(
+    `/projects/${projectId}/scenarios/jira/${encodeURIComponent(issueKey.trim())}`,
+  );
+  return data;
+}
+
 export interface SyncTestRailPayload {
   projectId: string;
-  featureId: string;
   testRailProjectId: number;
   suiteId?: number;
   sectionId?: number;
@@ -40,6 +47,7 @@ export interface CreateManualScenarioPayload {
   risk?: string;
   preconditions?: string;
   expectedResult?: string;
+  jiraKey?: string;
   tags?: string[];
   steps: ManualScenarioStepInput[];
 }
@@ -62,6 +70,17 @@ export async function generateScenarios(
     `/projects/${projectId}/scenarios/generate`,
     null,
     { params: { featureId } },
+  );
+  return data;
+}
+
+export async function generateScenariosFromStory(
+  projectId: string,
+  story: string,
+): Promise<Scenario[]> {
+  const { data } = await apiClient.post<Scenario[]>(
+    `/projects/${projectId}/scenarios/generate-from-story`,
+    { projectId, story },
   );
   return data;
 }

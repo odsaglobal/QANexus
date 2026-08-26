@@ -28,6 +28,28 @@ public sealed class CreateEnvironmentCommandHandler : IRequestHandler<CreateEnvi
             .FirstOrDefaultAsync(p => p.Id == request.ProjectId, cancellationToken)
             ?? throw new NotFoundException(nameof(Domain.Entities.Project), request.ProjectId);
 
+        // Seed the new environment with the project's existing variable KEYS (empty values) so variables
+        // stay in sync across environments — runs never fail on a variable that only existed elsewhere.
+        var siblingVariablesJson = await _db.Environments
+            .Where(e => e.ProjectId == project.Id && e.VariablesJson != null)
+            .Select(e => e.VariablesJson)
+            .ToListAsync(cancellationToken);
+
+        var seededKeys = new Dictionary<string, EnvironmentVariableDto>(StringComparer.Ordinal);
+        foreach (var json in siblingVariablesJson)
+        {
+            foreach (var variable in EnvironmentVariableSerialization.Parse(json))
+            {
+                // Inherit the key + its type from siblings, but start with an empty value.
+                seededKeys.TryAdd(variable.Key, new EnvironmentVariableDto
+                {
+                    Key = variable.Key,
+                    Value = string.Empty,
+                    Type = variable.Type,
+                });
+            }
+        }
+
         var environment = new EnvEntity
         {
             TenantId = tenantId,
@@ -35,7 +57,8 @@ public sealed class CreateEnvironmentCommandHandler : IRequestHandler<CreateEnvi
             Name = request.Name.Trim(),
             Type = Enum.Parse<EnvironmentType>(request.Type, ignoreCase: true),
             BaseUrl = request.BaseUrl.Trim(),
-            IsDefault = request.IsDefault
+            IsDefault = request.IsDefault,
+            VariablesJson = EnvironmentVariableSerialization.Serialize(seededKeys.Values)
         };
 
         if (request.IsDefault)

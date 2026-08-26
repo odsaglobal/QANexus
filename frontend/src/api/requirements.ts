@@ -66,3 +66,15 @@ export async function analyzeRequirement(
 export async function deleteRequirement(projectId: string, id: string): Promise<void> {
   await apiClient.delete(`/projects/${projectId}/requirements/${id}`);
 }
+
+export async function updateRequirementContent(
+  projectId: string,
+  id: string,
+  content: string,
+): Promise<RequirementDetail> {
+  const { data } = await apiClient.put<RequirementDetail>(
+    `/projects/${projectId}/requirements/${id}/content`,
+    { content },
+  );
+  return data;
+}

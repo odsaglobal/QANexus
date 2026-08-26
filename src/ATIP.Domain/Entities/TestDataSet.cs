@@ -14,6 +14,12 @@ public class TestDataSet : AuditableEntity, ITenantScoped
 
     public Project Project { get; set; } = null!;
 
+    /// <summary>The environment this data set belongs to. Test data is environment-specific:
+    /// e.g. staging accounts differ from production-like sandbox accounts.</summary>
+    public Guid EnvironmentId { get; set; }
+
+    public Environment Environment { get; set; } = null!;
+
     public required string Name { get; set; }
 
     public string? Description { get; set; }

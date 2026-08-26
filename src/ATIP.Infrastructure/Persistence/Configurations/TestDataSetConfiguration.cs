@@ -16,6 +16,12 @@ public sealed class TestDataSetConfiguration : IEntityTypeConfiguration<TestData
         builder.Property(d => d.ColumnsJson).HasColumnType("jsonb").IsRequired();
         builder.Property(d => d.RowsJson).HasColumnType("jsonb").IsRequired();
 
-        builder.HasIndex(d => new { d.ProjectId, d.Name }).IsUnique();
+        builder.HasOne(d => d.Environment)
+            .WithMany()
+            .HasForeignKey(d => d.EnvironmentId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasIndex(d => d.EnvironmentId);
+        builder.HasIndex(d => new { d.EnvironmentId, d.Name }).IsUnique();
     }
 }

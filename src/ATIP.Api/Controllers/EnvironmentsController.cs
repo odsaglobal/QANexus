@@ -1,6 +1,9 @@
 using ATIP.Application.Features.Environments.Commands.CreateEnvironment;
 using ATIP.Application.Features.Environments.Commands.DeleteEnvironment;
+using ATIP.Application.Features.Environments.Commands.UpdateEnvironment;
+using ATIP.Application.Features.Environments.Commands.UpdateEnvironmentVariables;
 using ATIP.Application.Features.Environments.Dtos;
+using ATIP.Application.Features.Environments.Queries.GetEnvironmentVariables;
 using ATIP.Application.Features.Environments.Queries.ListEnvironments;
 using Microsoft.AspNetCore.Mvc;
 
@@ -51,5 +54,58 @@ public sealed class EnvironmentsController : ApiControllerBase
     {
         await Mediator.Send(new DeleteEnvironmentCommand(id), cancellationToken);
         return NoContent();
+    }
+
+    /// <summary>Updates an existing environment.</summary>
+    [HttpPut("{id:guid}")]
+    [ProducesResponseType(typeof(EnvironmentDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<EnvironmentDto>> Update(
+        Guid projectId,
+        Guid id,
+        UpdateEnvironmentCommand command,
+        CancellationToken cancellationToken)
+    {
+        if (projectId != command.ProjectId || id != command.Id)
+        {
+            return BadRequest("Route projectId/id and body values do not match.");
+        }
+
+        var result = await Mediator.Send(command, cancellationToken);
+        return Ok(result);
+    }
+
+    /// <summary>Gets the Postman-style key/value variables for an environment.</summary>
+    [HttpGet("{id:guid}/variables")]
+    [ProducesResponseType(typeof(IReadOnlyList<EnvironmentVariableDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<IReadOnlyList<EnvironmentVariableDto>>> GetVariables(
+        Guid projectId,
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        var result = await Mediator.Send(new GetEnvironmentVariablesQuery(projectId, id), cancellationToken);
+        return Ok(result);
+    }
+
+    /// <summary>Replaces the full set of key/value variables for an environment.</summary>
+    [HttpPut("{id:guid}/variables")]
+    [ProducesResponseType(typeof(IReadOnlyList<EnvironmentVariableDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<IReadOnlyList<EnvironmentVariableDto>>> UpdateVariables(
+        Guid projectId,
+        Guid id,
+        UpdateEnvironmentVariablesCommand command,
+        CancellationToken cancellationToken)
+    {
+        if (projectId != command.ProjectId || id != command.EnvironmentId)
+        {
+            return BadRequest("Route projectId/environmentId and body values do not match.");
+        }
+
+        var result = await Mediator.Send(command, cancellationToken);
+        return Ok(result);
     }
 }

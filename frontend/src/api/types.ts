@@ -69,6 +69,12 @@ export interface CreateEnvironmentRequest {
   isDefault: boolean;
 }
 
+export interface EnvironmentVariable {
+  key: string;
+  value: string | null;
+  type?: 'text' | 'secret';
+}
+
 export interface PagedResult<T> {
   items: T[];
   page: number;
@@ -129,6 +135,7 @@ export interface RequirementDetail {
   status: RequirementStatus;
   errorMessage?: string | null;
   textPreview?: string | null;
+  content?: string | null;
   modules: RequirementModule[];
 }
 
@@ -153,11 +160,39 @@ export interface Scenario {
   source: string;
   preconditions?: string | null;
   expectedResult?: string | null;
+  jiraKey?: string | null;
   tags: string[];
   steps: ScenarioStep[];
   proposedSteps?: ScenarioStep[];
   canRevert?: boolean;
   createdAtUtc: string;
+}
+
+export interface JiraIssue {
+  key: string;
+  summary: string;
+  description?: string | null;
+  status?: string | null;
+  issueType?: string | null;
+  priority?: string | null;
+  url: string;
+}
+
+// ----- Test Data (environment-specific) -----
+
+export type TestDataRow = Record<string, string | null>;
+
+export interface TestDataSet {
+  id: string;
+  projectId: string;
+  environmentId: string;
+  name: string;
+  description?: string | null;
+  columns: string[];
+  rows: TestDataRow[];
+  rowCount: number;
+  createdAtUtc: string;
+  updatedAtUtc?: string | null;
 }
 
 // ----- Test Suites -----
@@ -254,6 +289,10 @@ export interface ExplorationSession {
   projectId: string;
   environmentId: string;
   featureId?: string | null;
+  scenarioId?: string | null;
+  suiteId?: string | null;
+  recordedScenarioId?: string | null;
+  prompt?: string | null;
   status: ExplorationStatus;
   seedUrl?: string | null;
   maxPages: number;
@@ -270,6 +309,8 @@ export interface StartExplorationRequest {
   projectId: string;
   environmentId: string;
   featureId?: string;
+  scenarioId?: string;
+  prompt?: string;
   seedUrl?: string;
   maxPages?: number;
   maxDepth?: number;

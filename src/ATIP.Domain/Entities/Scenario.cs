@@ -31,6 +31,9 @@ public class Scenario : AuditableEntity, ITenantScoped, ISoftDeletable
 
     public string? ExpectedResult { get; set; }
 
+    /// <summary>Optional Jira issue key this scenario traces to (e.g. PROJ-123).</summary>
+    public string? JiraKey { get; set; }
+
     /// <summary>Free-form tags, serialized as a JSON string array.</summary>
     public string? TagsJson { get; set; }
 

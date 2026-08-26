@@ -1,30 +1,25 @@
-import { useState } from 'react';
-import { Link as RouterLink, useNavigate } from 'react-router-dom';
-import { useMutation } from '@tanstack/react-query';
-import { Eye, EyeOff, Loader2 } from 'lucide-react';
-import { login } from '../api/auth';
-import { getErrorMessage } from '../lib/apiClient';
-import { useAuthStore } from '../store/authStore';
+import { useEffect } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { useAuth0 } from '@auth0/auth0-react';
+import { Loader2, LogIn } from 'lucide-react';
 import { AuthBrandPanel } from '../components/AuthBrandPanel';
 import { Button } from '../components/ui/button';
-import { Input } from '../components/ui/input';
-import { Label } from '../components/ui/label';
-import { Alert } from '../components/ui/alert';
 
+/** Landing sign-in page. Stays put until the user chooses to continue to Auth0. */
 export function LoginPage() {
+  const { loginWithRedirect, isAuthenticated, isLoading } = useAuth0();
   const navigate = useNavigate();
-  const setSession = useAuthStore((s) => s.setSession);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [showPwd, setShowPwd] = useState(false);
+  const location = useLocation();
+  const returnTo = (location.state as { from?: string } | null)?.from ?? '/';
 
-  const mutation = useMutation({
-    mutationFn: () => login({ email, password }),
-    onSuccess: (result) => {
-      setSession(result);
+  // If already signed in, don't show the login page — go to the app.
+  useEffect(() => {
+    if (!isLoading && isAuthenticated) {
       navigate('/', { replace: true });
-    },
-  });
+    }
+  }, [isAuthenticated, isLoading, navigate]);
+
+  const signIn = () => loginWithRedirect({ appState: { returnTo } });
 
   return (
     <div className="flex h-full bg-gray-50">
@@ -33,44 +28,18 @@ export function LoginPage() {
         <div className="w-full max-w-sm">
           <div className="mb-8">
             <h1 className="text-2xl font-bold text-foreground mb-1">Welcome back</h1>
-            <p className="text-muted-foreground text-sm">Sign in to your ATiP workspace.</p>
+            <p className="text-muted-foreground text-sm">Sign in to your QANexus workspace.</p>
           </div>
 
-          <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(); }} className="space-y-4">
-            {mutation.isError && (
-              <Alert severity="error">{getErrorMessage(mutation.error)}</Alert>
-            )}
-
-            <div className="space-y-1.5">
-              <Label htmlFor="email">Email</Label>
-              <Input id="email" type="email" placeholder="you@company.com" value={email}
-                onChange={(e) => setEmail(e.target.value)} required />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="password">Password</Label>
-              <div className="relative">
-                <Input id="password" type={showPwd ? 'text' : 'password'} placeholder="••••••••"
-                  value={password} onChange={(e) => setPassword(e.target.value)} required className="pr-10" />
-                <button type="button" onClick={() => setShowPwd(!showPwd)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors">
-                  {showPwd ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
-            </div>
-
-            <Button type="submit" className="w-full" disabled={mutation.isPending}>
-              {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {mutation.isPending ? 'Signing in…' : 'Sign in'}
+          {isLoading ? (
+            <p className="text-muted-foreground text-sm flex items-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" /> Checking your session…
+            </p>
+          ) : (
+            <Button className="w-full" size="lg" onClick={signIn}>
+              <LogIn className="h-4 w-4 mr-2" /> Continue with Auth0
             </Button>
-          </form>
-
-          <p className="mt-6 text-center text-sm text-muted-foreground">
-            No account yet?{' '}
-            <RouterLink to="/register" className="text-violet-600 font-semibold hover:underline">
-              Create an organization
-            </RouterLink>
-          </p>
+          )}
         </div>
       </div>
     </div>

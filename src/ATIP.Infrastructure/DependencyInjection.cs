@@ -39,6 +39,9 @@ public static class DependencyInjection
         services.AddOptions<TestRailOptions>()
             .Bind(configuration.GetSection(TestRailOptions.SectionName));
 
+        services.AddOptions<JiraOptions>()
+            .Bind(configuration.GetSection(JiraOptions.SectionName));
+
         services.AddOptions<StorageOptions>()
             .Bind(configuration.GetSection(StorageOptions.SectionName));
 
@@ -108,8 +111,27 @@ public static class DependencyInjection
             client.Timeout = TimeSpan.FromSeconds(120);
         });
 
+        var jiraOptions = configuration.GetSection(JiraOptions.SectionName).Get<JiraOptions>() ?? new JiraOptions();
+        services.AddHttpClient("jira", client =>
+        {
+            if (!string.IsNullOrWhiteSpace(jiraOptions.BaseUrl) && !jiraOptions.BaseUrl.Contains('<'))
+            {
+                client.BaseAddress = new Uri(jiraOptions.BaseUrl.TrimEnd('/') + "/");
+            }
+
+            if (!string.IsNullOrWhiteSpace(jiraOptions.Email) && !string.IsNullOrWhiteSpace(jiraOptions.ApiToken))
+            {
+                var token = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes($"{jiraOptions.Email}:{jiraOptions.ApiToken}"));
+                client.DefaultRequestHeaders.Authorization =
+                    new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", token);
+            }
+            client.DefaultRequestHeaders.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+            client.Timeout = TimeSpan.FromSeconds(30);
+        });
+
         services.AddScoped<ILlmClient, LlmClient>();
         services.AddScoped<ITestRailClient, TestRailClient>();
+        services.AddScoped<IJiraClient, JiraClient>();
         services.AddScoped<IDocumentTextExtractor, DocumentTextExtractor>();
         services.AddSingleton<IFileStorage, LocalFileStorage>();
 

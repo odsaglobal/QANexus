@@ -7,7 +7,7 @@ public sealed class CreateManualScenarioCommandValidator : AbstractValidator<Cre
     public CreateManualScenarioCommandValidator()
     {
         RuleFor(x => x.ProjectId).NotEmpty();
-        RuleFor(x => x.FeatureId).NotEmpty();
+        RuleFor(x => x.ProjectId).NotEmpty();
         RuleFor(x => x.Title).NotEmpty().MaximumLength(300);
         RuleFor(x => x.Steps).NotEmpty().WithMessage("Add at least one step.");
         RuleForEach(x => x.Steps).ChildRules(step =>

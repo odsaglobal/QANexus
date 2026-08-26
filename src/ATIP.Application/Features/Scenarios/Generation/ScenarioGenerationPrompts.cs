@@ -101,4 +101,37 @@ public static class ScenarioGenerationPrompts
         sb.AppendLine("Generate the scenarios as JSON per the system prompt.");
         return sb.ToString();
     }
+
+    /// <summary>
+    /// Builds a scenario-generation prompt from a free-text story/description plus the project's
+    /// business-context documents, for authoring manual test cases without a formal feature model.
+    /// </summary>
+    public static string BuildStoryUserPrompt(string story, string? businessContext)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Author test cases for the following story / description:");
+        sb.AppendLine("\"\"\"");
+        sb.AppendLine(story.Trim());
+        sb.AppendLine("\"\"\"");
+
+        if (!string.IsNullOrWhiteSpace(businessContext))
+        {
+            const int maxContextChars = 8_000;
+            var trimmed = businessContext.Trim();
+            if (trimmed.Length > maxContextChars)
+            {
+                trimmed = trimmed[..maxContextChars] + "\n... (truncated)";
+            }
+
+            sb.AppendLine();
+            sb.AppendLine("Business context (domain knowledge to ground the test cases) — use it, don't invent behavior:");
+            sb.AppendLine("\"\"\"");
+            sb.AppendLine(trimmed);
+            sb.AppendLine("\"\"\"");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("Generate the scenarios as JSON per the system prompt.");
+        return sb.ToString();
+    }
 }

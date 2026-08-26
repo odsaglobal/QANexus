@@ -43,6 +43,7 @@ public sealed class StartExplorationCommandHandler : IRequestHandler<StartExplor
             EnvironmentId = environment.Id,
             FeatureId = request.FeatureId,
             ScenarioId = request.ScenarioId,
+            Prompt = string.IsNullOrWhiteSpace(request.Prompt) ? null : request.Prompt.Trim(),
             SeedUrl = string.IsNullOrWhiteSpace(request.SeedUrl) ? environment.BaseUrl : request.SeedUrl.Trim(),
             MaxPages = request.MaxPages,
             MaxDepth = request.MaxDepth,

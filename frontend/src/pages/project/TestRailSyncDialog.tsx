@@ -11,8 +11,6 @@ import { Label } from '../../components/ui/label';
 
 interface TestRailSyncDialogProps {
   projectId: string;
-  featureId: string;
-  featureLabel: string;
   open: boolean;
   onClose: () => void;
   onSynced: (count: number) => void;
@@ -20,8 +18,6 @@ interface TestRailSyncDialogProps {
 
 export function TestRailSyncDialog({
   projectId,
-  featureId,
-  featureLabel,
   open,
   onClose,
   onSynced,
@@ -40,7 +36,6 @@ export function TestRailSyncDialog({
       }
       return syncTestRailScenarios({
         projectId,
-        featureId,
         testRailProjectId: parsedProjectId,
         suiteId: suiteId ? Number(suiteId) : undefined,
         sectionId: sectionId ? Number(sectionId) : undefined,
@@ -49,7 +44,6 @@ export function TestRailSyncDialog({
     onSuccess: (created) => {
       setError(null);
       queryClient.invalidateQueries({ queryKey: ['scenarios', projectId] });
-      queryClient.invalidateQueries({ queryKey: ['knowledge-graph', projectId] });
       onSynced(created.length);
       onClose();
     },
@@ -67,8 +61,8 @@ export function TestRailSyncDialog({
           {error && <Alert severity="error" className="text-sm">{error}</Alert>}
 
           <div className="text-sm text-muted-foreground">
-            Syncing into feature <span className="font-medium text-foreground">{featureLabel}</span>.
-            Existing TestRail scenarios for this feature are replaced.
+            Imports TestRail test cases as scenarios you can explore and run.
+            Previously-synced TestRail scenarios are replaced.
           </div>
 
           <div className="space-y-1.5">

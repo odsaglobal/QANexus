@@ -2,14 +2,15 @@ import { useEffect, useState } from 'react';
 import { Link as RouterLink, Outlet, matchPath, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import {
-  LayoutDashboard, FolderOpen, FileText, FlaskConical, GitBranch,
-  Play, BarChart2, Layers, Settings, ChevronDown,
+  LayoutDashboard, FolderOpen, FileText, FlaskConical,
+  Play, BarChart2, Settings, ChevronDown,
   Bell, HelpCircle, Search, LogOut, User, Activity, Shield,
-  Database, Lightbulb,
+  Lightbulb, Compass, Server,
 } from 'lucide-react';
 import { listEnvironments } from '../api/environments';
 import { listProjects } from '../api/projects';
 import { useAuthStore } from '../store/authStore';
+import { useAuth0 } from '@auth0/auth0-react';
 import { AtipLogo } from './AtipLogo';
 import { Avatar, AvatarFallback } from './ui/avatar';
 import { Button } from './ui/button';
@@ -23,11 +24,10 @@ import {
 const simpleNav: { label: string; to: string; icon: React.ReactNode; section?: string }[] = [
   { label: 'Dashboard',      to: '/',               icon: <LayoutDashboard className="h-4 w-4" /> },
   { label: 'Projects',       to: '/projects',       icon: <FolderOpen className="h-4 w-4" />,      section: 'Projects' },
-  { label: 'Requirements',   to: '/requirements',   icon: <FileText className="h-4 w-4" />,         section: 'AI Engine' },
+  { label: 'Environments',   to: '/environments',   icon: <Server className="h-4 w-4" />,           section: 'Projects' },
+  { label: 'Business Context', to: '/requirements',   icon: <FileText className="h-4 w-4" />,         section: 'AI Engine' },
   { label: 'Scenarios',      to: '/scenarios',      icon: <FlaskConical className="h-4 w-4" />,     section: 'AI Engine' },
-  { label: 'Test Suites',    to: '/suites',         icon: <Layers className="h-4 w-4" />,           section: 'AI Engine' },
-  { label: 'Knowledge Graph',to: '/knowledge-graph',icon: <GitBranch className="h-4 w-4" />,       section: 'AI Engine' },
-  { label: 'Test Data',      to: '/test-data',      icon: <Database className="h-4 w-4" />,         section: 'AI Engine' },
+  { label: 'Explorer',       to: '/explorer',       icon: <Compass className="h-4 w-4" />,          section: 'AI Engine' },
   { label: 'Executions',     to: '/executions',     icon: <Play className="h-4 w-4" />,             section: 'Execution' },
   { label: 'Reports',        to: '/reports',        icon: <BarChart2 className="h-4 w-4" />,        section: 'Execution' },
   { label: 'AI Insights',    to: '/ai-insights',    icon: <Lightbulb className="h-4 w-4" />,       section: 'Execution' },
@@ -50,6 +50,7 @@ const selectedEnvironmentStorageKey = 'atip.selectedEnvironmentId';
 export function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { logout } = useAuth0();
   const user = useAuthStore((s) => s.user);
   const clear = useAuthStore((s) => s.clear);
   const [darkMode, setDarkMode] = useState(false);
@@ -152,7 +153,7 @@ export function AppLayout() {
 
   const handleLogout = () => {
     clear();
-    navigate('/login', { replace: true });
+    logout({ logoutParams: { returnTo: `${window.location.origin}/login` } });
   };
 
   const initials = user?.displayName

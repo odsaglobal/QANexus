@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus, Trash2 } from 'lucide-react';
-import { createManualScenario, type ManualScenarioStepInput } from '../../api/scenarios';
+import { Loader2, Plus, Trash2, Link2, ExternalLink } from 'lucide-react';
+import { createManualScenario, getJiraIssue, type ManualScenarioStepInput } from '../../api/scenarios';
+import type { JiraIssue } from '../../api/types';
 import { getErrorMessage } from '../../lib/apiClient';
 import { Alert } from '../../components/ui/alert';
+import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '../../components/ui/dialog';
 import { Input } from '../../components/ui/input';
@@ -34,6 +36,8 @@ export function ManualScenarioDialog({ projectId, featureId, featureLabel, open,
   const [risk, setRisk] = useState('Medium');
   const [preconditions, setPreconditions] = useState('');
   const [expectedResult, setExpectedResult] = useState('');
+  const [jiraKey, setJiraKey] = useState('');
+  const [jiraIssue, setJiraIssue] = useState<JiraIssue | null>(null);
   const [steps, setSteps] = useState<EditableStep[]>([{ key: crypto.randomUUID(), action: '', expectedResult: '' }]);
   const [error, setError] = useState<string | null>(null);
 
@@ -54,6 +58,7 @@ export function ManualScenarioDialog({ projectId, featureId, featureLabel, open,
         projectId, featureId, title: title.trim(), type, priority, risk,
         preconditions: preconditions.trim() || undefined,
         expectedResult: expectedResult.trim() || undefined,
+        jiraKey: jiraKey.trim() || undefined,
         steps: payloadSteps,
       });
     },
@@ -63,6 +68,18 @@ export function ManualScenarioDialog({ projectId, featureId, featureLabel, open,
       queryClient.invalidateQueries({ queryKey: ['knowledge-graph', projectId] });
       onCreated();
       onClose();
+    },
+    onError: (e) => setError(getErrorMessage(e)),
+  });
+
+  const jiraFetch = useMutation({
+    mutationFn: () => getJiraIssue(projectId, jiraKey),
+    onSuccess: (issue) => {
+      setError(null);
+      setJiraIssue(issue);
+      setJiraKey(issue.key);
+      if (!title.trim()) setTitle(issue.summary);
+      if (!preconditions.trim() && issue.description) setPreconditions(issue.description);
     },
     onError: (e) => setError(getErrorMessage(e)),
   });
@@ -84,6 +101,31 @@ export function ManualScenarioDialog({ projectId, featureId, featureLabel, open,
           <div className="space-y-1.5">
             <Label>Title</Label>
             <Input value={title} onChange={(e) => { setError(null); setTitle(e.target.value); }} placeholder="e.g. Login with valid credentials" autoFocus />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label className="flex items-center gap-1.5"><Link2 className="h-3.5 w-3.5" /> Jira ticket <span className="text-muted-foreground font-normal">(optional)</span></Label>
+            <div className="flex items-center gap-2">
+              <Input value={jiraKey} onChange={(e) => { setJiraKey(e.target.value); setJiraIssue(null); }}
+                placeholder="PROJ-123" className="font-mono" />
+              <Button type="button" variant="outline" disabled={!jiraKey.trim() || jiraFetch.isPending}
+                onClick={() => jiraFetch.mutate()}>
+                {jiraFetch.isPending ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : null}
+                Fetch
+              </Button>
+            </div>
+            {jiraIssue && (
+              <div className="rounded-lg border border-border bg-muted/40 p-2.5 text-xs space-y-1">
+                <div className="flex items-center gap-2">
+                  <a href={jiraIssue.url} target="_blank" rel="noreferrer" className="font-mono font-semibold text-violet-600 hover:underline flex items-center gap-1">
+                    {jiraIssue.key} <ExternalLink className="h-3 w-3" />
+                  </a>
+                  {jiraIssue.issueType && <Badge variant="outline">{jiraIssue.issueType}</Badge>}
+                  {jiraIssue.status && <Badge variant="secondary">{jiraIssue.status}</Badge>}
+                </div>
+                <div className="font-medium text-foreground">{jiraIssue.summary}</div>
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-3 gap-3">

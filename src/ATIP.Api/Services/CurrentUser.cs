@@ -1,7 +1,6 @@
 using System.Security.Claims;
 using ATIP.Application.Common.Interfaces;
 using ATIP.Domain.Enums;
-using ATIP.Infrastructure.Identity;
 
 namespace ATIP.Api.Services;
 
@@ -18,11 +17,12 @@ public sealed class CurrentUser : ICurrentUser
     private ClaimsPrincipal? Principal => _accessor.HttpContext?.User;
 
     public Guid? UserId =>
-        TryParseGuid(Principal?.FindFirstValue(ClaimTypes.NameIdentifier)
+        TryParseGuid(Principal?.FindFirstValue(Auth0ClaimsTransformer.AppUserIdClaim)
+                     ?? Principal?.FindFirstValue(ClaimTypes.NameIdentifier)
                      ?? Principal?.FindFirstValue("sub"));
 
     public Guid? TenantId =>
-        TryParseGuid(Principal?.FindFirstValue(JwtTokenService.TenantIdClaim));
+        TryParseGuid(Principal?.FindFirstValue(Auth0ClaimsTransformer.TenantIdClaim));
 
     public string? Email => Principal?.FindFirstValue(ClaimTypes.Email);
 

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using ATIP.Application.Common.Exceptions;
 using ATIP.Application.Common.Interfaces;
+using ATIP.Application.Features.Scenarios.Common;
 using ATIP.Application.Features.Scenarios.Dtos;
 using ATIP.Domain.Entities;
 using ATIP.Domain.Enums;
@@ -28,9 +29,12 @@ public sealed class CreateManualScenarioCommandHandler
         var tenantId = _currentUser.TenantId
             ?? throw new ForbiddenAccessException("No tenant context.");
 
-        var feature = await _db.Features
-            .FirstOrDefaultAsync(f => f.Id == request.FeatureId && f.ProjectId == request.ProjectId, cancellationToken)
-            ?? throw new NotFoundException(nameof(Feature), request.FeatureId);
+        // Feature is optional: fall back to the hidden per-project "General" bucket.
+        var feature = request.FeatureId == Guid.Empty
+            ? await ScenarioBucket.EnsureAsync(_db, tenantId, request.ProjectId, cancellationToken)
+            : await _db.Features
+                .FirstOrDefaultAsync(f => f.Id == request.FeatureId && f.ProjectId == request.ProjectId, cancellationToken)
+              ?? throw new NotFoundException(nameof(Feature), request.FeatureId);
 
         var tags = request.Tags?.Where(t => !string.IsNullOrWhiteSpace(t)).ToList() ?? [];
         if (!tags.Contains("import:manual"))
@@ -50,6 +54,7 @@ public sealed class CreateManualScenarioCommandHandler
             Source = ScenarioSource.Manual,
             Preconditions = request.Preconditions?.Trim(),
             ExpectedResult = request.ExpectedResult?.Trim(),
+            JiraKey = string.IsNullOrWhiteSpace(request.JiraKey) ? null : request.JiraKey.Trim(),
             TagsJson = JsonSerializer.Serialize(tags),
         };
 

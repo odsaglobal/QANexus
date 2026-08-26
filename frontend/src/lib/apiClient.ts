@@ -3,9 +3,9 @@ import type { ProblemDetails } from '../api/types';
 import { useAuthStore } from '../store/authStore';
 
 /**
- * Single axios instance for the whole app. A request interceptor attaches the
- * bearer token; a response interceptor signs the user out on 401 so expired
- * sessions redirect to login cleanly.
+ * Single axios instance for the whole app. A request interceptor attaches the Auth0 access token
+ * (kept fresh in the auth store by Auth0SessionBridge); a 401 clears the session so the
+ * ProtectedRoute re-initiates Auth0 login.
  */
 export const apiClient = axios.create({
   baseURL: '/api/v1',

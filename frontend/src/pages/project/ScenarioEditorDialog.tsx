@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Trash2, ArrowUp, ArrowDown, Loader2, AlertTriangle } from 'lucide-react';
-import type { Scenario } from '../../api/types';
-import { deleteScenario, updateScenario, applyProposedSteps, discardProposedSteps, revertSteps, type UpdateScenarioStepInput } from '../../api/scenarios';
+import { Plus, Trash2, ArrowUp, ArrowDown, Loader2, AlertTriangle, Link2, ExternalLink } from 'lucide-react';
+import type { JiraIssue, Scenario } from '../../api/types';
+import { deleteScenario, updateScenario, applyProposedSteps, discardProposedSteps, revertSteps, getJiraIssue, type UpdateScenarioStepInput } from '../../api/scenarios';
 import { getErrorMessage } from '../../lib/apiClient';
 import { cn } from '../../lib/utils';
 import { Button } from '../../components/ui/button';
@@ -34,6 +34,8 @@ export function ScenarioEditorDialog({ scenario, projectId, open, onClose }: {
   const [risk, setRisk] = useState(scenario.risk);
   const [preconditions, setPreconditions] = useState(scenario.preconditions ?? '');
   const [expectedResult, setExpectedResult] = useState(scenario.expectedResult ?? '');
+  const [jiraKey, setJiraKey] = useState(scenario.jiraKey ?? '');
+  const [jiraIssue, setJiraIssue] = useState<JiraIssue | null>(null);
   const [steps, setSteps] = useState<EditableStep[]>(() =>
     scenario.steps.map((s) => ({ key: crypto.randomUUID(), action: s.action, expectedResult: s.expectedResult ?? '', needsReview: s.needsReview, reviewReason: s.reviewReason })),
   );
@@ -43,6 +45,8 @@ export function ScenarioEditorDialog({ scenario, projectId, open, onClose }: {
     setTitle(scenario.title); setType(scenario.type); setPriority(scenario.priority);
     setRisk(scenario.risk); setPreconditions(scenario.preconditions ?? '');
     setExpectedResult(scenario.expectedResult ?? '');
+    setJiraKey(scenario.jiraKey ?? '');
+    setJiraIssue(null);
     setSteps(scenario.steps.map((s) => ({ key: crypto.randomUUID(), action: s.action, expectedResult: s.expectedResult ?? '', needsReview: s.needsReview, reviewReason: s.reviewReason })));
     setError(null);
   }, [scenario]);
@@ -72,12 +76,25 @@ export function ScenarioEditorDialog({ scenario, projectId, open, onClose }: {
       id: scenario.id, title: title.trim(), type, priority, risk,
       preconditions: preconditions.trim() || undefined,
       expectedResult: expectedResult.trim() || undefined,
+      jiraKey: jiraKey.trim() || undefined,
       tags: scenario.tags,
       steps: steps.filter((s) => s.action.trim()).map<UpdateScenarioStepInput>((s) => ({
         action: s.action.trim(), expectedResult: s.expectedResult.trim() || undefined,
       })),
     }),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['scenarios', projectId] }); onClose(); },
+    onError: (e) => setError(getErrorMessage(e)),
+  });
+
+  const jiraFetch = useMutation({
+    mutationFn: () => getJiraIssue(projectId, jiraKey),
+    onSuccess: (issue) => {
+      setError(null);
+      setJiraIssue(issue);
+      setJiraKey(issue.key);
+      if (!title.trim()) setTitle(issue.summary);
+      if (!preconditions.trim() && issue.description) setPreconditions(issue.description);
+    },
     onError: (e) => setError(getErrorMessage(e)),
   });
 
@@ -159,6 +176,34 @@ export function ScenarioEditorDialog({ scenario, projectId, open, onClose }: {
           <div className="space-y-1.5">
             <Label>Title</Label>
             <Input value={title} onChange={(e) => setTitle(e.target.value)} required autoFocus />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label className="flex items-center gap-1.5"><Link2 className="h-3.5 w-3.5" /> Jira ticket <span className="text-muted-foreground font-normal">(optional)</span></Label>
+            <div className="flex items-center gap-2">
+              <Input value={jiraKey} onChange={(e) => { setJiraKey(e.target.value); setJiraIssue(null); }}
+                placeholder="PROJ-123" className="font-mono" />
+              <Button type="button" variant="outline" disabled={!jiraKey.trim() || jiraFetch.isPending}
+                onClick={() => jiraFetch.mutate()}>
+                {jiraFetch.isPending ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : null}
+                Fetch
+              </Button>
+            </div>
+            {jiraIssue && (
+              <div className="rounded-lg border border-border bg-muted/40 p-2.5 text-xs space-y-1">
+                <div className="flex items-center gap-2">
+                  <a href={jiraIssue.url} target="_blank" rel="noreferrer" className="font-mono font-semibold text-violet-600 hover:underline flex items-center gap-1">
+                    {jiraIssue.key} <ExternalLink className="h-3 w-3" />
+                  </a>
+                  {jiraIssue.issueType && <Badge variant="outline">{jiraIssue.issueType}</Badge>}
+                  {jiraIssue.status && <Badge variant="secondary">{jiraIssue.status}</Badge>}
+                  {jiraIssue.priority && <Badge variant="outline">{jiraIssue.priority}</Badge>}
+                </div>
+                <div className="font-medium text-foreground">{jiraIssue.summary}</div>
+                {jiraIssue.description && <p className="text-muted-foreground line-clamp-4 whitespace-pre-wrap">{jiraIssue.description}</p>}
+              </div>
+            )}
+            <p className="text-[11px] text-muted-foreground">Enter a Jira key and Fetch to pull details, or just type a reference manually.</p>
           </div>
 
           <div className="grid grid-cols-3 gap-3">

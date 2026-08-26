@@ -1,4 +1,3 @@
-using System.Text;
 using ATIP.Api.Hubs;
 using ATIP.Api.Middleware;
 using ATIP.Api.Services;
@@ -41,24 +40,30 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 
-// ----- Authentication (JWT bearer) -----
-var jwtOptions = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>()
-    ?? new JwtOptions();
+// ----- Authentication (Auth0 OIDC bearer tokens) -----
+var auth0Options = builder.Configuration.GetSection(Auth0Options.SectionName).Get<Auth0Options>()
+    ?? new Auth0Options();
 
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
-        options.MapInboundClaims = false; // keep original claim types (sub, tenant_id, ...)
+        options.MapInboundClaims = false; // keep original claim types (sub, email, ...)
+
+        // Auth0 publishes OIDC metadata + JWKS at {Issuer}/.well-known/..., so access tokens are
+        // validated against Auth0's rotating RS256 signing keys automatically.
+        options.Authority = auth0Options.Issuer;
+        options.Audience = auth0Options.Audience;
+        options.RequireHttpsMetadata = auth0Options.Issuer.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+
         options.TokenValidationParameters = new TokenValidationParameters
         {
-            ValidateIssuer = true,
-            ValidateAudience = true,
+            ValidateIssuer = auth0Options.IsConfigured,
+            ValidateAudience = auth0Options.IsConfigured,
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
-            ValidIssuer = jwtOptions.Issuer,
-            ValidAudience = jwtOptions.Audience,
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.SigningKey)),
+            ValidIssuer = auth0Options.Issuer,
+            ValidAudience = auth0Options.Audience,
             ClockSkew = TimeSpan.FromSeconds(30),
             NameClaimType = "sub",
             RoleClaimType = System.Security.Claims.ClaimTypes.Role
@@ -80,6 +85,9 @@ builder.Services
             }
         };
     });
+
+// JIT-provision an internal user/tenant for each Auth0 identity and enrich the principal.
+builder.Services.AddScoped<Microsoft.AspNetCore.Authentication.IClaimsTransformation, Auth0ClaimsTransformer>();
 
 builder.Services.AddAuthorization();
 

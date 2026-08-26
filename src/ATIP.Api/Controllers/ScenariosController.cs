@@ -4,11 +4,13 @@ using ATIP.Application.Features.Explorer.Queries.GetLatestScenarioRun;
 using ATIP.Application.Features.Scenarios.Commands.CreateManualScenario;
 using ATIP.Application.Features.Scenarios.Commands.DeleteScenario;
 using ATIP.Application.Features.Scenarios.Commands.GenerateScenarios;
+using ATIP.Application.Features.Scenarios.Commands.GenerateScenariosFromStory;
 using ATIP.Application.Features.Scenarios.Commands.ImportScenariosFromFile;
 using ATIP.Application.Features.Scenarios.Commands.ProposedSteps;
 using ATIP.Application.Features.Scenarios.Commands.SyncTestRailScenarios;
 using ATIP.Application.Features.Scenarios.Commands.UpdateScenario;
 using ATIP.Application.Features.Scenarios.Dtos;
+using ATIP.Application.Features.Scenarios.Queries.GetJiraIssue;
 using ATIP.Application.Features.Scenarios.Queries.ListScenarios;
 using Microsoft.AspNetCore.Mvc;
 
@@ -45,7 +47,42 @@ public sealed class ScenariosController : ApiControllerBase
         return Ok(result);
     }
 
-    /// <summary>Creates a single manually-authored scenario with ordered steps.</summary>
+    /// <summary>Generates manual test-case scenarios from a free-text story grounded in the project's business context.</summary>
+    [HttpPost("generate-from-story")]
+    [ProducesResponseType(typeof(IReadOnlyList<ScenarioDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<IReadOnlyList<ScenarioDto>>> GenerateFromStory(
+        Guid projectId,
+        GenerateScenariosFromStoryCommand command,
+        CancellationToken cancellationToken)
+    {
+        if (projectId != command.ProjectId)
+        {
+            return BadRequest("Route projectId and body projectId do not match.");
+        }
+
+        var result = await Mediator.Send(command, cancellationToken);
+        return Ok(result);
+    }
+
+    /// <summary>Fetches a Jira issue's details by key (e.g. PROJ-123) to reference/prefill a scenario.</summary>
+    [HttpGet("jira/{issueKey}")]
+    [ProducesResponseType(typeof(ATIP.Application.Common.Models.JiraIssue), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ATIP.Application.Common.Models.JiraIssue>> GetJiraIssue(
+        Guid projectId,
+        string issueKey,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(issueKey))
+        {
+            return BadRequest("A Jira issue key is required.");
+        }
+
+        var result = await Mediator.Send(new GetJiraIssueQuery(issueKey), cancellationToken);
+        return Ok(result);
+    }
     [HttpPost("manual")]
     [ProducesResponseType(typeof(ScenarioDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]

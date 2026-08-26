@@ -24,6 +24,9 @@ public sealed record UpdateScenarioCommand : IRequest<ScenarioDto>
 
     public string? ExpectedResult { get; init; }
 
+    /// <summary>Optional Jira issue key this scenario traces to (e.g. PROJ-123).</summary>
+    public string? JiraKey { get; init; }
+
     public IReadOnlyList<string> Tags { get; init; } = [];
 
     /// <summary>Ordered list of steps — the full list replaces whatever was stored previously.</summary>

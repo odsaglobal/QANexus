@@ -2,8 +2,6 @@ export const projectTabs = [
   'overview',
   'requirements',
   'scenarios',
-  'suites',
-  'graph',
   'explorer',
   'environments',
 ] as const;
@@ -14,8 +12,6 @@ const tabToPathSegmentMap: Record<ProjectTab, string> = {
   overview: 'overview',
   requirements: 'requirements',
   scenarios: 'scenarios',
-  suites: 'suites',
-  graph: 'knowledge-graph',
   explorer: 'explorer',
   environments: 'environments',
 };
@@ -24,9 +20,6 @@ const pathSegmentToTabMap: Record<string, ProjectTab> = {
   overview: 'overview',
   requirements: 'requirements',
   scenarios: 'scenarios',
-  suites: 'suites',
-  graph: 'graph',
-  'knowledge-graph': 'graph',
   explorer: 'explorer',
   environments: 'environments',
 };
@@ -47,7 +40,6 @@ export function pathSegmentToTab(segment: string | null | undefined): ProjectTab
 export function entryRouteToTab(pathname: string): ProjectTab | null {
   if (pathname === '/requirements') return 'requirements';
   if (pathname === '/scenarios') return 'scenarios';
-  if (pathname === '/knowledge-graph') return 'graph';
   if (pathname === '/explorer') return 'explorer';
   return null;
 }

@@ -15,6 +15,7 @@ public sealed record ScenarioDto
     public required string Source { get; init; }
     public string? Preconditions { get; init; }
     public string? ExpectedResult { get; init; }
+    public string? JiraKey { get; init; }
     public required IReadOnlyList<string> Tags { get; init; }
     public required IReadOnlyList<ScenarioStepDto> Steps { get; init; }
     /// <summary>AI-discovered steps from a goal-driven exploration, awaiting the user's confirmation.</summary>
@@ -34,6 +35,7 @@ public sealed record ScenarioDto
         Source = s.Source.ToString(),
         Preconditions = s.Preconditions,
         ExpectedResult = s.ExpectedResult,
+        JiraKey = s.JiraKey,
         Tags = Deserialize(s.TagsJson),
         Steps = s.Steps
             .OrderBy(st => st.Order)

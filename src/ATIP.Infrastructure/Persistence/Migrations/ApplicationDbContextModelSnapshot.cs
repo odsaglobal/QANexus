@@ -803,6 +803,10 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                     b.Property<bool>("IsDeleted")
                         .HasColumnType("boolean");
 
+                    b.Property<string>("JiraKey")
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)");
+
                     b.Property<string>("Preconditions")
                         .HasMaxLength(2000)
                         .HasColumnType("character varying(2000)");
@@ -1044,6 +1048,9 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                         .HasMaxLength(1000)
                         .HasColumnType("character varying(1000)");
 
+                    b.Property<Guid>("EnvironmentId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(120)
@@ -1067,7 +1074,11 @@ namespace ATIP.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("ProjectId", "Name")
+                    b.HasIndex("EnvironmentId");
+
+                    b.HasIndex("ProjectId");
+
+                    b.HasIndex("EnvironmentId", "Name")
                         .IsUnique();
 
                     b.ToTable("test_data_sets", (string)null);
@@ -1448,11 +1459,19 @@ namespace ATIP.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("ATIP.Domain.Entities.TestDataSet", b =>
                 {
+                    b.HasOne("ATIP.Domain.Entities.Environment", "Environment")
+                        .WithMany()
+                        .HasForeignKey("EnvironmentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
                     b.HasOne("ATIP.Domain.Entities.Project", "Project")
                         .WithMany("TestDataSets")
                         .HasForeignKey("ProjectId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.Navigation("Environment");
 
                     b.Navigation("Project");
                 });

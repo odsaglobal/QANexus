@@ -74,9 +74,9 @@ public sealed class TestRailClient : ITestRailClient
             }
 
             scenarios.Add(new ImportedTestScenario(
-                Title: title,
-                Preconditions: preconditions,
-                ExpectedResult: expected,
+                Title: StripHtml(title)!,
+                Preconditions: StripHtml(preconditions),
+                ExpectedResult: StripHtml(expected),
                 Steps: steps,
                 ExternalReference: externalRef));
         }
@@ -116,7 +116,7 @@ public sealed class TestRailClient : ITestRailClient
                 }
 
                 var expected = TryGetString(step, "expected");
-                result.Add(new ImportedTestStep(order++, action, expected));
+                result.Add(new ImportedTestStep(order++, StripHtml(action)!, StripHtml(expected)));
             }
 
             if (result.Count > 0)
@@ -133,8 +133,9 @@ public sealed class TestRailClient : ITestRailClient
 
         var lines = combined
             .Split(['\n', '\r'], StringSplitOptions.RemoveEmptyEntries)
-            .Select(line => line.Trim())
+            .Select(line => StripHtml(line.Trim()))
             .Where(line => !string.IsNullOrWhiteSpace(line))
+            .Select(line => line!)
             .ToList();
 
         var parsed = new List<ImportedTestStep>(lines.Count);
@@ -144,6 +145,28 @@ public sealed class TestRailClient : ITestRailClient
         }
 
         return parsed;
+    }
+
+    /// <summary>
+    /// TestRail returns rich-text fields (steps, preconditions, expected) as HTML. Convert to clean
+    /// plain text: block-closing tags → newlines, strip remaining tags, decode entities, trim.
+    /// </summary>
+    private static string? StripHtml(string? html)
+    {
+        if (string.IsNullOrWhiteSpace(html))
+        {
+            return html;
+        }
+
+        var text = html;
+        text = System.Text.RegularExpressions.Regex.Replace(text, "<\\s*br\\s*/?>", "\n", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        text = System.Text.RegularExpressions.Regex.Replace(text, "</\\s*(p|div|li|tr|h[1-6])\\s*>", "\n", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        text = System.Text.RegularExpressions.Regex.Replace(text, "<[^>]+>", string.Empty);
+        text = System.Net.WebUtility.HtmlDecode(text);
+        // Collapse 3+ newlines to a single blank line and trim trailing spaces per line.
+        text = System.Text.RegularExpressions.Regex.Replace(text, "[ \\t]+\n", "\n");
+        text = System.Text.RegularExpressions.Regex.Replace(text, "\n{3,}", "\n\n");
+        return text.Trim();
     }
 
     private static string? TryGetString(JsonElement element, string propertyName)

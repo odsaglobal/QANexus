@@ -1,6 +1,7 @@
 using System.Text.Json;
 using ATIP.Application.Common.Exceptions;
 using ATIP.Application.Common.Interfaces;
+using ATIP.Application.Features.Scenarios.Common;
 using ATIP.Application.Features.Scenarios.Dtos;
 using ATIP.Application.Features.Scenarios.Import;
 using ATIP.Domain.Entities;
@@ -29,11 +30,19 @@ public sealed class ImportScenariosFromFileCommandHandler
         var tenantId = _currentUser.TenantId
             ?? throw new ForbiddenAccessException("No tenant context.");
 
-        var feature = await _db.Features
-            .Include(f => f.Scenarios)
-            .ThenInclude(s => s.Steps)
-            .FirstOrDefaultAsync(f => f.Id == request.FeatureId && f.ProjectId == request.ProjectId, cancellationToken)
-            ?? throw new NotFoundException(nameof(Feature), request.FeatureId);
+        Feature feature;
+        if (request.FeatureId == Guid.Empty)
+        {
+            feature = await ScenarioBucket.EnsureAsync(_db, tenantId, request.ProjectId, cancellationToken);
+        }
+        else
+        {
+            feature = await _db.Features
+                .Include(f => f.Scenarios)
+                .ThenInclude(s => s.Steps)
+                .FirstOrDefaultAsync(f => f.Id == request.FeatureId && f.ProjectId == request.ProjectId, cancellationToken)
+                ?? throw new NotFoundException(nameof(Feature), request.FeatureId);
+        }
 
         var parsed = ScenarioImportParser.Parse(request.FileName, request.Content);
         if (parsed.Count == 0)
@@ -59,7 +68,7 @@ public sealed class ImportScenariosFromFileCommandHandler
             {
                 TenantId = tenantId,
                 ProjectId = request.ProjectId,
-                FeatureId = request.FeatureId,
+                FeatureId = feature.Id,
                 Title = Truncate(imported.Title, 300),
                 Type = ScenarioType.Positive,
                 Priority = Priority.Medium,

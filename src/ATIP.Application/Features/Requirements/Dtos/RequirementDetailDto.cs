@@ -12,6 +12,7 @@ public sealed record RequirementDetailDto
     public required string Status { get; init; }
     public string? ErrorMessage { get; init; }
     public string? TextPreview { get; init; }
+    public string? Content { get; init; }
     public required IReadOnlyList<ModuleDto> Modules { get; init; }
 
     public static RequirementDetailDto FromEntity(Requirement r) => new()
@@ -24,6 +25,7 @@ public sealed record RequirementDetailDto
         TextPreview = r.ExtractedText is null
             ? null
             : r.ExtractedText[..Math.Min(2000, r.ExtractedText.Length)],
+        Content = r.ExtractedText,
         Modules = r.Modules
             .OrderBy(m => m.Name)
             .Select(ModuleDto.FromEntity)

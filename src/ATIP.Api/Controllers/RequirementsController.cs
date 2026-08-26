@@ -1,6 +1,7 @@
 using ATIP.Application.Features.Requirements.Commands.AnalyzeRequirement;
 using ATIP.Application.Features.Requirements.Commands.CreateManualFeature;
 using ATIP.Application.Features.Requirements.Commands.DeleteRequirement;
+using ATIP.Application.Features.Requirements.Commands.UpdateRequirementContent;
 using ATIP.Application.Features.Requirements.Commands.UploadRequirement;
 using ATIP.Application.Features.Requirements.Dtos;
 using ATIP.Application.Features.Requirements.Queries.GetRequirement;
@@ -99,6 +100,20 @@ public sealed class RequirementsController : ApiControllerBase
         return Ok(result);
     }
 
+    /// <summary>Updates the extracted text (content) of a business-context document.</summary>
+    [HttpPut("{id:guid}/content")]
+    [ProducesResponseType(typeof(RequirementDetailDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<RequirementDetailDto>> UpdateContent(
+        Guid projectId,
+        Guid id,
+        [FromBody] UpdateRequirementContentRequest body,
+        CancellationToken cancellationToken)
+    {
+        var result = await Mediator.Send(new UpdateRequirementContentCommand(id, body.Content ?? string.Empty), cancellationToken);
+        return Ok(result);
+    }
+
     /// <summary>Soft-deletes a requirement and its extracted structure.</summary>
     [HttpDelete("{id:guid}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
@@ -109,3 +124,6 @@ public sealed class RequirementsController : ApiControllerBase
         return NoContent();
     }
 }
+
+/// <summary>Request body for updating a document's content.</summary>
+public sealed record UpdateRequirementContentRequest(string? Content);

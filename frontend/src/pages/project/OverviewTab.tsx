@@ -26,6 +26,9 @@ const explorationStatusVariant: Record<string, 'info' | 'warning' | 'success' | 
   Pending: 'info', Running: 'warning', Completed: 'success', Failed: 'destructive', Cancelled: 'secondary',
 };
 
+// Hidden internal buckets that back scenarios — not real business-context documents.
+const HIDDEN_DOCS = new Set(['General', 'AI Explorations']);
+
 export function OverviewTab({ projectId }: { projectId: string }) {
   const navigate = useNavigate();
 
@@ -50,8 +53,7 @@ export function OverviewTab({ projectId }: { projectId: string }) {
   const goTo = (tab: ProjectTab) => navigate(`/projects/${projectId}/${tabToPathSegment(tab)}`);
 
   const stats = useMemo(() => {
-    const analyzed = requirements.filter((r) => r.status === 'Analyzed').length;
-    const featureCount = requirements.reduce((sum, r) => sum + r.featureCount, 0);
+    const businessDocs = requirements.filter((r) => !HIDDEN_DOCS.has(r.name));
     const bySource = { AiGenerated: 0, Manual: 0, TestRail: 0 } as Record<string, number>;
     const byType: Record<string, number> = {};
     for (const s of scenarios) {
@@ -62,9 +64,7 @@ export function OverviewTab({ projectId }: { projectId: string }) {
     const discoveredElements = sessions.reduce((sum, s) => sum + s.elementsDiscovered, 0);
     const activeExplorations = sessions.filter((s) => s.status === 'Running' || s.status === 'Pending').length;
     return {
-      requirementCount: requirements.length,
-      analyzed,
-      featureCount,
+      businessDocCount: businessDocs.length,
       scenarioCount: scenarios.length,
       bySource,
       byType,
@@ -84,10 +84,6 @@ export function OverviewTab({ projectId }: { projectId: string }) {
     [stats.byType],
   );
 
-  const analysisPct = stats.requirementCount > 0
-    ? Math.round((stats.analyzed / stats.requirementCount) * 100)
-    : 0;
-
   const recentSessions = useMemo(
     () => [...sessions]
       .sort((a, b) => new Date(b.createdAtUtc).getTime() - new Date(a.createdAtUtc).getTime())
@@ -97,10 +93,9 @@ export function OverviewTab({ projectId }: { projectId: string }) {
 
   const checklist = [
     { done: stats.environmentCount > 0, label: 'Add an environment', tab: 'environments' as ProjectTab, hint: 'Point the platform at your app URL.' },
-    { done: stats.requirementCount > 0, label: 'Upload a requirement document', tab: 'requirements' as ProjectTab, hint: 'AI extracts modules, features and user stories.' },
-    { done: stats.analyzed > 0, label: 'Analyze requirements', tab: 'requirements' as ProjectTab, hint: 'Turn documents into a structured feature tree.' },
-    { done: stats.scenarioCount > 0, label: 'Generate test scenarios', tab: 'scenarios' as ProjectTab, hint: 'Author manually or generate with AI.' },
-    { done: stats.sessionCount > 0, label: 'Run an application exploration', tab: 'explorer' as ProjectTab, hint: 'Crawl the app to discover pages and locators.' },
+    { done: stats.businessDocCount > 0, label: 'Add business context', tab: 'requirements' as ProjectTab, hint: 'Upload md/txt/pdf docs the AI reads while testing.' },
+    { done: stats.scenarioCount > 0, label: 'Create test cases', tab: 'scenarios' as ProjectTab, hint: 'Generate from a story, add manually, or import.' },
+    { done: stats.sessionCount > 0, label: 'Explore or run a scenario', tab: 'explorer' as ProjectTab, hint: 'Drive a real browser to discover and verify steps.' },
   ];
   const completedSteps = checklist.filter((c) => c.done).length;
 
@@ -117,14 +112,9 @@ export function OverviewTab({ projectId }: { projectId: string }) {
       {/* KPI stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         <StatCard
-          label="Requirements" value={stats.requirementCount}
-          sublabel={`${stats.analyzed} analyzed`} icon={<FileText className="h-5 w-5" />}
+          label="Business context" value={stats.businessDocCount}
+          sublabel="documents" icon={<FileText className="h-5 w-5" />}
           iconBg="bg-blue-50 text-blue-600" loading={isLoading} onClick={() => goTo('requirements')}
-        />
-        <StatCard
-          label="Features" value={stats.featureCount}
-          sublabel="from documents" icon={<Layers className="h-5 w-5" />}
-          iconBg="bg-emerald-50 text-emerald-600" loading={isLoading} onClick={() => goTo('requirements')}
         />
         <StatCard
           label="Scenarios" value={stats.scenarioCount}
@@ -136,6 +126,12 @@ export function OverviewTab({ projectId }: { projectId: string }) {
           label="Environments" value={stats.environmentCount}
           sublabel={stats.hasDefaultEnv ? 'default set' : 'no default'} icon={<Server className="h-5 w-5" />}
           iconBg="bg-amber-50 text-amber-600" loading={isLoading} onClick={() => goTo('environments')}
+        />
+        <StatCard
+          label="Explorations" value={stats.sessionCount}
+          sublabel={stats.activeExplorations > 0 ? `${stats.activeExplorations} running` : 'runs & explores'}
+          icon={<Layers className="h-5 w-5" />}
+          iconBg="bg-emerald-50 text-emerald-600" loading={isLoading} onClick={() => goTo('explorer')}
         />
         <StatCard
           label="Pages discovered" value={stats.discoveredPages}
@@ -185,28 +181,16 @@ export function OverviewTab({ projectId }: { projectId: string }) {
           </CardContent>
         </Card>
 
-        {/* Requirement analysis progress + scenario composition */}
+        {/* Scenario overview */}
         <Card>
           <CardHeader className="pb-3">
-            <CardTitle>Analysis coverage</CardTitle>
-            <CardDescription>Requirement documents processed by AI.</CardDescription>
+            <CardTitle>Test coverage</CardTitle>
+            <CardDescription>Scenarios by type across the project.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div>
-              <div className="flex items-baseline justify-between mb-1.5">
-                <span className="text-2xl font-bold text-foreground">{analysisPct}%</span>
-                <span className="text-xs text-muted-foreground">{stats.analyzed}/{stats.requirementCount} analyzed</span>
-              </div>
-              <div
-                className="h-2 w-full overflow-hidden rounded-full bg-muted"
-                role="progressbar"
-                aria-valuenow={analysisPct}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-label="Requirement analysis progress"
-              >
-                <div className="h-full rounded-full bg-violet-500 transition-all" style={{ width: `${analysisPct}%` }} />
-              </div>
+            <div className="flex items-baseline justify-between">
+              <span className="text-2xl font-bold text-foreground">{stats.scenarioCount}</span>
+              <span className="text-xs text-muted-foreground">{stats.bySource.AiGenerated} AI · {stats.bySource.Manual} manual</span>
             </div>
 
             <div className="pt-1">
@@ -288,16 +272,16 @@ export function OverviewTab({ projectId }: { projectId: string }) {
       {/* Quick actions */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <QuickAction
-          icon={<FileText className="h-5 w-5" />} title="Upload requirements"
-          description="Extract features with AI" onClick={() => goTo('requirements')}
+          icon={<FileText className="h-5 w-5" />} title="Add business context"
+          description="Upload domain docs for the AI" onClick={() => goTo('requirements')}
         />
         <QuickAction
-          icon={<Sparkles className="h-5 w-5" />} title="Generate scenarios"
-          description="AI, manual or TestRail" onClick={() => goTo('scenarios')}
+          icon={<Sparkles className="h-5 w-5" />} title="Create test cases"
+          description="Generate from a story or add manually" onClick={() => goTo('scenarios')}
         />
         <QuickAction
           icon={<ExternalLink className="h-5 w-5" />} title="Explore application"
-          description="Discover pages & locators" onClick={() => goTo('explorer')}
+          description="Drive a real browser to verify" onClick={() => goTo('explorer')}
         />
       </div>
 

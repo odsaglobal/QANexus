@@ -28,6 +28,7 @@ public sealed class UpdateScenarioCommandHandler : IRequestHandler<UpdateScenari
         scenario.Risk = Enum.Parse<RiskLevel>(request.Risk, ignoreCase: true);
         scenario.Preconditions = request.Preconditions?.Trim();
         scenario.ExpectedResult = request.ExpectedResult?.Trim();
+        scenario.JiraKey = string.IsNullOrWhiteSpace(request.JiraKey) ? null : request.JiraKey.Trim();
         scenario.TagsJson = request.Tags.Count > 0
             ? JsonSerializer.Serialize(request.Tags)
             : null;

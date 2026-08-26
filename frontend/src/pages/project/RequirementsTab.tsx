@@ -1,46 +1,37 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Upload, Sparkles, Trash2, ChevronDown, Loader2 } from 'lucide-react';
+import { Upload, Trash2, Loader2, FileText, Eye, Pencil, Save, X } from 'lucide-react';
 import type { Requirement } from '../../api/types';
-import {
-  analyzeRequirement, deleteRequirement, getRequirement,
-  listRequirements, uploadRequirement,
-} from '../../api/requirements';
+import { deleteRequirement, getRequirement, listRequirements, updateRequirementContent, uploadRequirement } from '../../api/requirements';
 import { getErrorMessage } from '../../lib/apiClient';
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
 import { Alert } from '../../components/ui/alert';
+import { Textarea } from '../../components/ui/textarea';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../components/ui/dialog';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
-import { cn } from '../../lib/utils';
 import { useConfirm } from '../../components/ui/confirm-dialog';
+
+// Hidden internal buckets that back scenarios — never shown as business-context documents.
+const HIDDEN_DOCS = new Set(['General', 'AI Explorations']);
 
 export function RequirementsTab({ projectId }: { projectId: string }) {
   const queryClient = useQueryClient();
   const { confirm } = useConfirm();
   const [error, setError] = useState<string | null>(null);
-  const [analyzingId, setAnalyzingId] = useState<string | null>(null);
+  const [previewDoc, setPreviewDoc] = useState<Requirement | null>(null);
 
   const { data: requirements = [] } = useQuery({
     queryKey: ['requirements', projectId],
     queryFn: () => listRequirements(projectId),
   });
 
+  const docs = requirements.filter((r) => !HIDDEN_DOCS.has(r.name));
+
   const uploadMutation = useMutation({
     mutationFn: (file: File) => uploadRequirement(projectId, file.name, file),
     onSuccess: () => { setError(null); queryClient.invalidateQueries({ queryKey: ['requirements', projectId] }); },
-    onError: (e) => setError(getErrorMessage(e)),
-  });
-
-  const analyzeMutation = useMutation({
-    mutationFn: (id: string) => analyzeRequirement(projectId, id),
-    onMutate: (id) => setAnalyzingId(id),
-    onSettled: () => setAnalyzingId(null),
-    onSuccess: () => {
-      setError(null);
-      queryClient.invalidateQueries({ queryKey: ['requirements', projectId] });
-      queryClient.invalidateQueries({ queryKey: ['knowledge-graph', projectId] });
-    },
     onError: (e) => setError(getErrorMessage(e)),
   });
 
@@ -61,14 +52,17 @@ export function RequirementsTab({ projectId }: { projectId: string }) {
         <CardHeader className="pb-3">
           <div className="flex items-start justify-between">
             <div>
-              <CardTitle>Requirement Intelligence</CardTitle>
-              <CardDescription>Upload SRS/BRD/Swagger docs; AI extracts modules, features and user stories.</CardDescription>
+              <CardTitle>Business Context</CardTitle>
+              <CardDescription>
+                Upload domain documents (Markdown, text, PDF, DOCX). The AI reads them while exploring your app and
+                when generating test cases — so it understands your terminology and rules.
+              </CardDescription>
             </div>
             <Button variant="outline" size="sm" asChild>
               <label className="cursor-pointer">
                 {uploadMutation.isPending ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Upload className="h-4 w-4 mr-1.5" />}
                 Upload document
-                <input type="file" hidden accept=".pdf,.docx,.md,.markdown,.txt,.json,.yaml,.yml" onChange={handleFile} />
+                <input type="file" hidden accept=".md,.markdown,.txt,.pdf,.docx,.json,.yaml,.yml" onChange={handleFile} />
               </label>
             </Button>
           </div>
@@ -80,114 +74,154 @@ export function RequirementsTab({ projectId }: { projectId: string }) {
               <TableRow>
                 <TableHead>Document</TableHead>
                 <TableHead>Type</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-center">Modules</TableHead>
-                <TableHead className="text-center">Features</TableHead>
-                <TableHead />
+                <TableHead>Uploaded</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {requirements.length === 0 && (
+              {docs.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center py-10 text-muted-foreground text-sm">
-                    No documents uploaded yet.
+                  <TableCell colSpan={4} className="text-center py-10 text-muted-foreground text-sm">
+                    No business-context documents yet. Upload a .md or .txt file describing your domain.
                   </TableCell>
                 </TableRow>
               )}
-              {requirements.map((req) => (
-                <RequirementRow key={req.id} projectId={projectId} requirement={req}
-                  analyzing={analyzingId === req.id}
-                  onAnalyze={() => analyzeMutation.mutate(req.id)}
-                  onDelete={async () => {
-                    if (await confirm({ title: 'Delete document?', description: `"${req.name}" and its extracted analysis will be removed.`, confirmText: 'Delete', tone: 'destructive' })) {
-                      deleteMutation.mutate(req.id);
-                    }
-                  }} />
+              {docs.map((req: Requirement) => (
+                <TableRow key={req.id}>
+                  <TableCell>
+                    <div className="font-medium text-sm flex items-center gap-2">
+                      <FileText className="h-4 w-4 text-violet-500 shrink-0" />
+                      {req.name}
+                    </div>
+                    {req.errorMessage && <div className="text-xs text-red-500 mt-0.5">{req.errorMessage}</div>}
+                  </TableCell>
+                  <TableCell><Badge variant="outline">{req.sourceType}</Badge></TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {new Date(req.createdAtUtc).toLocaleString()}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-1 justify-end">
+                      <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground" aria-label={`View ${req.name}`}
+                        onClick={() => { setError(null); setPreviewDoc(req); }}>
+                        <Eye className="h-4 w-4" />
+                      </Button>
+                      <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" aria-label={`Delete ${req.name}`}
+                        onClick={async () => {
+                          if (await confirm({ title: 'Delete document?', description: `"${req.name}" will be removed from the business context.`, confirmText: 'Delete', tone: 'destructive' })) {
+                            deleteMutation.mutate(req.id);
+                          }
+                        }}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
               ))}
             </TableBody>
           </Table>
         </CardContent>
       </Card>
+
+      {previewDoc && (
+        <DocumentPreviewDialog
+          projectId={projectId}
+          doc={previewDoc}
+          onClose={() => setPreviewDoc(null)}
+        />
+      )}
     </div>
   );
 }
 
-function RequirementRow({ projectId, requirement, analyzing, onAnalyze, onDelete }: {
-  projectId: string; requirement: Requirement; analyzing: boolean; onAnalyze: () => void; onDelete: () => void;
+function DocumentPreviewDialog({
+  projectId, doc, onClose,
+}: {
+  projectId: string;
+  doc: Requirement;
+  onClose: () => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const detailQuery = useQuery({
-    queryKey: ['requirement', projectId, requirement.id, requirement.status],
-    queryFn: () => getRequirement(projectId, requirement.id),
-    enabled: expanded && requirement.status === 'Analyzed',
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const { data: detail, isLoading } = useQuery({
+    queryKey: ['requirement', projectId, doc.id],
+    queryFn: () => getRequirement(projectId, doc.id),
   });
 
+  const content = detail?.content ?? '';
+
+  const saveMutation = useMutation({
+    mutationFn: () => updateRequirementContent(projectId, doc.id, draft),
+    onSuccess: (updated) => {
+      setError(null);
+      setEditing(false);
+      queryClient.setQueryData(['requirement', projectId, doc.id], updated);
+      queryClient.invalidateQueries({ queryKey: ['requirements', projectId] });
+    },
+    onError: (e) => setError(getErrorMessage(e)),
+  });
+
+  const startEdit = () => { setDraft(content); setEditing(true); };
+
   return (
-    <>
-      <TableRow>
-        <TableCell>
-          <div className="font-medium text-sm">{requirement.name}</div>
-          {requirement.errorMessage && <div className="text-xs text-red-500 mt-0.5">{requirement.errorMessage}</div>}
-        </TableCell>
-        <TableCell><Badge variant="outline">{requirement.sourceType}</Badge></TableCell>
-        <TableCell>
-          <Badge variant={requirement.status === 'Analyzed' ? 'success' : requirement.status === 'Failed' ? 'warning' : 'info'}>
-            {requirement.status}
-          </Badge>
-        </TableCell>
-        <TableCell className="text-center text-sm">{requirement.moduleCount}</TableCell>
-        <TableCell className="text-center text-sm">{requirement.featureCount}</TableCell>
-        <TableCell>
-          <div className="flex items-center gap-1 justify-end">
-            {requirement.status === 'Analyzed' && (
-              <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={expanded ? 'Collapse details' : 'Expand details'} aria-expanded={expanded} onClick={() => setExpanded((v) => !v)}>
-                <ChevronDown className={cn('h-4 w-4 transition-transform', expanded && 'rotate-180')} />
-              </Button>
-            )}
-            <Button variant="ghost" size="sm" className="h-8 text-xs"
-              disabled={analyzing || requirement.status === 'Failed'} onClick={onAnalyze}>
-              {analyzing ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1" />}
-              {requirement.status === 'Analyzed' ? 'Re-analyze' : 'Analyze'}
-            </Button>
-            <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" aria-label={`Delete ${requirement.name}`} onClick={onDelete}>
-              <Trash2 className="h-4 w-4" />
-            </Button>
-          </div>
-        </TableCell>
-      </TableRow>
-      {expanded && (
-        <TableRow>
-          <TableCell colSpan={6} className="bg-gray-50/50 px-6 py-3">
-            {detailQuery.isLoading && <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />}
-            <div className="space-y-3">
-              {detailQuery.data?.modules.map((module) => (
-                <div key={module.id} className="border border-border rounded-lg">
-                  <div className="flex items-center gap-2 px-4 py-2.5 bg-white rounded-lg">
-                    <span className="text-sm font-semibold">{module.name}</span>
-                    <Badge variant="secondary">{module.features.length} features</Badge>
-                  </div>
-                  <div className="px-4 pb-3 pt-1 space-y-2">
-                    {module.features.map((feature) => (
-                      <div key={feature.id} className="pl-3 border-l-2 border-violet-300">
-                        <div className="flex items-center gap-2 mb-0.5">
-                          <span className="text-sm font-semibold">{feature.name}</span>
-                          <Badge variant="outline" className="text-xs">{feature.priority}</Badge>
-                        </div>
-                        {feature.description && <p className="text-xs text-muted-foreground mb-1">{feature.description}</p>}
-                        {feature.userStories.map((story) => (
-                          <p key={story.id} className="text-xs text-muted-foreground">
-                            • As a {story.asA}, I want {story.iWant}{story.soThat ? `, so that ${story.soThat}` : ''}
-                          </p>
-                        ))}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-w-3xl gap-0 p-0 overflow-hidden">
+        <DialogHeader className="border-b border-border px-6 py-4">
+          <DialogTitle className="flex items-center gap-2">
+            <FileText className="h-4 w-4 text-violet-500" />
+            {doc.name}
+            <Badge variant="outline" className="ml-1">{doc.sourceType}</Badge>
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="px-6 py-4 max-h-[65vh] overflow-y-auto">
+          {error && <Alert severity="error" className="text-sm mb-3">{error}</Alert>}
+          {isLoading ? (
+            <div className="py-10 text-center text-muted-foreground text-sm">
+              <Loader2 className="h-5 w-5 animate-spin mx-auto mb-2" /> Loading content…
             </div>
-          </TableCell>
-        </TableRow>
-      )}
-    </>
+          ) : editing ? (
+            <Textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              rows={20}
+              className="font-mono text-xs leading-relaxed"
+              autoFocus
+            />
+          ) : content ? (
+            <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
+              {content}
+            </pre>
+          ) : (
+            <p className="py-10 text-center text-muted-foreground text-sm">
+              This document has no extracted text. Click Edit to add content.
+            </p>
+          )}
+        </div>
+
+        <DialogFooter className="border-t border-border px-6 py-4">
+          {editing ? (
+            <>
+              <Button variant="outline" onClick={() => setEditing(false)} disabled={saveMutation.isPending}>
+                <X className="h-4 w-4 mr-1.5" /> Cancel
+              </Button>
+              <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
+                {saveMutation.isPending ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Save className="h-4 w-4 mr-1.5" />}
+                Save changes
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button variant="outline" onClick={onClose}>Close</Button>
+              <Button onClick={startEdit} disabled={isLoading}>
+                <Pencil className="h-4 w-4 mr-1.5" /> Edit
+              </Button>
+            </>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

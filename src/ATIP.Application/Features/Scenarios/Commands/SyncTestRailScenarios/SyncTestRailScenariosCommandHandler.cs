@@ -1,6 +1,7 @@
 using System.Text.Json;
 using ATIP.Application.Common.Exceptions;
 using ATIP.Application.Common.Interfaces;
+using ATIP.Application.Features.Scenarios.Common;
 using ATIP.Application.Features.Scenarios.Dtos;
 using ATIP.Domain.Entities;
 using ATIP.Domain.Enums;
@@ -33,11 +34,11 @@ public sealed class SyncTestRailScenariosCommandHandler
         var tenantId = _currentUser.TenantId
             ?? throw new ForbiddenAccessException("No tenant context.");
 
-        var feature = await _db.Features
-            .Include(f => f.Scenarios)
-            .ThenInclude(s => s.Steps)
-            .FirstOrDefaultAsync(f => f.Id == request.FeatureId && f.ProjectId == request.ProjectId, cancellationToken)
-            ?? throw new NotFoundException(nameof(Feature), request.FeatureId);
+        var feature = request.FeatureId == Guid.Empty
+            ? await ScenarioBucket.EnsureAsync(_db, tenantId, request.ProjectId, cancellationToken)
+            : await _db.Features
+                .FirstOrDefaultAsync(f => f.Id == request.FeatureId && f.ProjectId == request.ProjectId, cancellationToken)
+              ?? throw new NotFoundException(nameof(Feature), request.FeatureId);
 
         var imported = await _testRail.GetCasesAsync(
             request.TestRailProjectId,
@@ -52,8 +53,16 @@ public sealed class SyncTestRailScenariosCommandHandler
             ]);
         }
 
-        var existing = feature.Scenarios.Where(s => s.Source == ScenarioSource.TestRail).ToList();
-        _db.Scenarios.RemoveRange(existing);
+        // Replace previously-synced TestRail scenarios for this feature (bulk delete avoids the EF
+        // tracked delete/insert row-count reconciliation exception).
+        await _db.ScenarioSteps
+            .IgnoreQueryFilters()
+            .Where(s => s.Scenario.FeatureId == feature.Id && s.Scenario.Source == ScenarioSource.TestRail)
+            .ExecuteDeleteAsync(cancellationToken);
+        await _db.Scenarios
+            .IgnoreQueryFilters()
+            .Where(s => s.FeatureId == feature.Id && s.Source == ScenarioSource.TestRail)
+            .ExecuteDeleteAsync(cancellationToken);
 
         var created = new List<Scenario>(imported.Count);
         foreach (var testCase in imported)
@@ -68,7 +77,7 @@ public sealed class SyncTestRailScenariosCommandHandler
             {
                 TenantId = tenantId,
                 ProjectId = request.ProjectId,
-                FeatureId = request.FeatureId,
+                FeatureId = feature.Id,
                 Title = Truncate(testCase.Title, 300),
                 Type = InferType(testCase.Title),
                 Priority = Priority.Medium,

@@ -6,8 +6,6 @@ import { OverviewTab } from './project/OverviewTab';
 import { EnvironmentsTab } from './project/EnvironmentsTab';
 import { RequirementsTab } from './project/RequirementsTab';
 import { ScenariosTab } from './project/ScenariosTab';
-import { SuitesTab } from './project/SuitesTab';
-import { KnowledgeGraphTab } from './project/KnowledgeGraphTab';
 import { ExplorerTab } from './project/ExplorerTab';
 import { Tabs, TabsContent } from '../components/ui/tabs';
 import { isProjectTab, pathSegmentToTab, tabToPathSegment, type ProjectTab } from '../lib/projectTabs';
@@ -66,12 +64,6 @@ export function ProjectDetailPage() {
         </TabsContent>
         <TabsContent value="scenarios" className="mt-6">
           <ScenariosTab projectId={projectId} />
-        </TabsContent>
-        <TabsContent value="suites" className="mt-6">
-          <SuitesTab projectId={projectId} />
-        </TabsContent>
-        <TabsContent value="graph" className="mt-6">
-          <KnowledgeGraphTab projectId={projectId} />
         </TabsContent>
         <TabsContent value="explorer" className="mt-6">
           <ExplorerTab projectId={projectId} />

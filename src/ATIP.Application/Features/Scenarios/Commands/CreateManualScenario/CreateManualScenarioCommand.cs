@@ -14,6 +14,7 @@ public sealed record CreateManualScenarioCommand : IRequest<ScenarioDto>
     public string Risk { get; init; } = "Medium";
     public string? Preconditions { get; init; }
     public string? ExpectedResult { get; init; }
+    public string? JiraKey { get; init; }
     public IReadOnlyList<string>? Tags { get; init; }
     public required IReadOnlyList<CreateManualScenarioStep> Steps { get; init; }
 }

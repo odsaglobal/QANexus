@@ -7,7 +7,7 @@ public sealed class ImportScenariosFromFileCommandValidator : AbstractValidator<
     public ImportScenariosFromFileCommandValidator()
     {
         RuleFor(x => x.ProjectId).NotEmpty();
-        RuleFor(x => x.FeatureId).NotEmpty();
+        RuleFor(x => x.ProjectId).NotEmpty();
         RuleFor(x => x.FileName)
             .NotEmpty()
             .Must(name =>

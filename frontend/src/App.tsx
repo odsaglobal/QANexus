@@ -1,8 +1,8 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
+import { Loader2 } from 'lucide-react';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { AppLayout } from './components/AppLayout';
 import { LoginPage } from './pages/LoginPage';
-import { RegisterPage } from './pages/RegisterPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { ProjectsPage } from './pages/ProjectsPage';
 import { ProjectDetailPage } from './pages/ProjectDetailPage';
@@ -12,7 +12,6 @@ import { ExecutionsPage } from './pages/ExecutionsPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { AgentsPage } from './pages/AgentsPage';
 import { SettingsPage } from './pages/SettingsPage';
-import { TestDataPage } from './pages/TestDataPage';
 import { AiInsightsPage } from './pages/AiInsightsPage';
 import { AdministrationPage } from './pages/AdministrationPage';
 
@@ -20,7 +19,7 @@ export function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
-      <Route path="/register" element={<RegisterPage />} />
+      <Route path="/login/callback" element={<AuthCallback />} />
 
       <Route
         element={
@@ -41,16 +40,11 @@ export function App() {
           path="/scenarios"
           element={<ProjectTabRedirect title="Scenario Explorer" tab="scenarios" />}
         />
-        <Route
-          path="/knowledge-graph"
-          element={<ProjectTabRedirect title="Knowledge Graph" tab="graph" />}
-        />
         <Route path="/explorer" element={<ProjectTabRedirect title="Page Explorer" tab="explorer" />} />
-        <Route path="/suites" element={<ProjectTabRedirect title="Test Suites" tab="suites" />} />
+        <Route path="/environments" element={<ProjectTabRedirect title="Environments" tab="environments" />} />
         <Route path="/locators" element={<LocatorsPage />} />
         <Route path="/executions" element={<ExecutionsPage />} />
         <Route path="/reports" element={<ReportsPage />} />
-        <Route path="/test-data" element={<TestDataPage />} />
         <Route path="/ai-insights" element={<AiInsightsPage />} />
         <Route path="/agents" element={<AgentsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
@@ -59,5 +53,14 @@ export function App() {
 
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+  );
+}
+
+/** Shown briefly while the Auth0 SDK processes the redirect callback and navigates onward. */
+function AuthCallback() {
+  return (
+    <div className="flex h-screen items-center justify-center text-muted-foreground">
+      <Loader2 className="h-6 w-6 animate-spin" />
+    </div>
   );
 }

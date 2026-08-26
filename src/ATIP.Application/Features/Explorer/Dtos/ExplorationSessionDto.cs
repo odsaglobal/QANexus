@@ -8,6 +8,10 @@ public sealed record ExplorationSessionDto
     public required Guid ProjectId { get; init; }
     public required Guid EnvironmentId { get; init; }
     public Guid? FeatureId { get; init; }
+    public Guid? ScenarioId { get; init; }
+    public Guid? SuiteId { get; init; }
+    public Guid? RecordedScenarioId { get; init; }
+    public string? Prompt { get; init; }
     public required string Status { get; init; }
     public string? SeedUrl { get; init; }
     public required int MaxPages { get; init; }
@@ -25,6 +29,10 @@ public sealed record ExplorationSessionDto
         ProjectId = s.ProjectId,
         EnvironmentId = s.EnvironmentId,
         FeatureId = s.FeatureId,
+        ScenarioId = s.ScenarioId,
+        SuiteId = s.SuiteId,
+        RecordedScenarioId = s.RecordedScenarioId,
+        Prompt = s.Prompt,
         Status = s.Status.ToString(),
         SeedUrl = s.SeedUrl,
         MaxPages = s.MaxPages,
