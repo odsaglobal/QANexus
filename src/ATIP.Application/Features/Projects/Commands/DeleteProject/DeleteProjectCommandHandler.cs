@@ -8,8 +8,13 @@ namespace ATIP.Application.Features.Projects.Commands.DeleteProject;
 public sealed class DeleteProjectCommandHandler : IRequestHandler<DeleteProjectCommand>
 {
     private readonly IApplicationDbContext _db;
+    private readonly IAuditLogger _audit;
 
-    public DeleteProjectCommandHandler(IApplicationDbContext db) => _db = db;
+    public DeleteProjectCommandHandler(IApplicationDbContext db, IAuditLogger audit)
+    {
+        _db = db;
+        _audit = audit;
+    }
 
     public async Task Handle(DeleteProjectCommand request, CancellationToken cancellationToken)
     {
@@ -20,5 +25,7 @@ public sealed class DeleteProjectCommandHandler : IRequestHandler<DeleteProjectC
         // Soft delete is applied by the SaveChanges interceptor when IsDeleted flips to true.
         project.IsDeleted = true;
         await _db.SaveChangesAsync(cancellationToken);
+
+        await _audit.LogAsync("project.deleted", "Project", $"Deleted project \"{project.Name}\"", nameof(Domain.Entities.Project), project.Id, cancellationToken);
     }
 }

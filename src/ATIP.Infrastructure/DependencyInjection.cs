@@ -61,6 +61,9 @@ public static class DependencyInjection
 
         services.AddScoped<IApplicationDbContext>(sp => sp.GetRequiredService<ApplicationDbContext>());
 
+        services.AddScoped<IAuditLogger, Audit.AuditLogger>();
+        services.AddScoped<INotificationService, Notifications.NotificationService>();
+
         services.AddScoped<IPasswordHasher, BcryptPasswordHasher>();
         services.AddScoped<IJwtTokenService, JwtTokenService>();
         services.AddSingleton<ISecretProtector, AesGcmSecretProtector>();

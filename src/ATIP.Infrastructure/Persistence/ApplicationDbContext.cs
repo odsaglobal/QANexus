@@ -74,6 +74,12 @@ public sealed class ApplicationDbContext : DbContext, IApplicationDbContext
 
     public DbSet<TestSuiteScenario> TestSuiteScenarios => Set<TestSuiteScenario>();
 
+    public DbSet<AuditLogEntry> AuditLogs => Set<AuditLogEntry>();
+
+    public DbSet<Notification> Notifications => Set<Notification>();
+
+    public DbSet<ApiKey> ApiKeys => Set<ApiKey>();
+
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
         optionsBuilder.AddInterceptors(_auditInterceptor);

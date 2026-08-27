@@ -32,6 +32,7 @@ export interface Project {
   status: ProjectStatus;
   environmentCount: number;
   memberCount: number;
+  currentUserRole?: 'Owner' | 'Editor' | 'Viewer' | null;
   createdAtUtc: string;
   updatedAtUtc?: string | null;
 }

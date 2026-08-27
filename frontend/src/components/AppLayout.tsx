@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import {
   LayoutDashboard, FolderOpen, FileText, FlaskConical,
   Play, BarChart2, Settings, ChevronDown,
-  Bell, HelpCircle, Search, LogOut, User, Activity, Shield,
+  HelpCircle, Search, LogOut, User, Activity, Shield,
   Lightbulb, Compass, Server,
 } from 'lucide-react';
 import { listEnvironments } from '../api/environments';
@@ -12,6 +12,7 @@ import { listProjects } from '../api/projects';
 import { useAuthStore } from '../store/authStore';
 import { useAuth0 } from '@auth0/auth0-react';
 import { AtipLogo } from './AtipLogo';
+import { NotificationBell } from './NotificationBell';
 import { Avatar, AvatarFallback } from './ui/avatar';
 import { Button } from './ui/button';
 import { Separator } from './ui/separator';
@@ -299,10 +300,7 @@ export function AppLayout() {
             <Button variant="ghost" size="icon" className="text-muted-foreground h-8 w-8">
               <Search className="h-4 w-4" />
             </Button>
-            <Button variant="ghost" size="icon" className="text-muted-foreground h-8 w-8 relative">
-              <Bell className="h-4 w-4" />
-              <span className="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-violet-600" />
-            </Button>
+            <NotificationBell />
             <Button variant="ghost" size="icon" className="text-muted-foreground h-8 w-8">
               <HelpCircle className="h-4 w-4" />
             </Button>

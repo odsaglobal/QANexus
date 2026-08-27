@@ -1,10 +1,12 @@
+using ATIP.Application.Common.Security;
 using ATIP.Application.Features.TestData.Dtos;
+using ATIP.Domain.Enums;
 using MediatR;
 
 namespace ATIP.Application.Features.TestData.Commands.CreateTestDataSet;
 
 /// <summary>Creates a new environment-scoped test data set.</summary>
-public sealed record CreateTestDataSetCommand : IRequest<TestDataSetDto>
+public sealed record CreateTestDataSetCommand : IRequest<TestDataSetDto>, IProjectScopedRequest
 {
     public Guid ProjectId { get; init; }
 
@@ -17,4 +19,6 @@ public sealed record CreateTestDataSetCommand : IRequest<TestDataSetDto>
     public List<string> Columns { get; init; } = new();
 
     public List<Dictionary<string, string?>> Rows { get; init; } = new();
+
+    public ProjectRole RequiredRole => ProjectRole.Editor;
 }

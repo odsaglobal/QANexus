@@ -12,15 +12,18 @@ public sealed class ExploreScenarioCommandHandler : IRequestHandler<ExploreScena
     private readonly IApplicationDbContext _db;
     private readonly ICurrentUser _currentUser;
     private readonly IExplorationQueue _queue;
+    private readonly IAuditLogger _audit;
 
     public ExploreScenarioCommandHandler(
         IApplicationDbContext db,
         ICurrentUser currentUser,
-        IExplorationQueue queue)
+        IExplorationQueue queue,
+        IAuditLogger audit)
     {
         _db = db;
         _currentUser = currentUser;
         _queue = queue;
+        _audit = audit;
     }
 
     public async Task<ExplorationSessionDto> Handle(ExploreScenarioCommand request, CancellationToken cancellationToken)
@@ -71,6 +74,9 @@ public sealed class ExploreScenarioCommandHandler : IRequestHandler<ExploreScena
         await _db.SaveChangesAsync(cancellationToken);
 
         await _queue.EnqueueAsync(session.Id, cancellationToken);
+
+        var verb = request.ExecuteSavedSteps ? "run" : "explore";
+        await _audit.LogAsync($"scenario.{verb}", "Scenario", $"Started {verb} of scenario \"{scenario.Title}\"", nameof(Scenario), scenario.Id, cancellationToken);
 
         return ExplorationSessionDto.FromEntity(session);
     }

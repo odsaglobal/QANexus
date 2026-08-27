@@ -52,5 +52,11 @@ public interface IApplicationDbContext
 
     DbSet<TestSuiteScenario> TestSuiteScenarios { get; }
 
+    DbSet<AuditLogEntry> AuditLogs { get; }
+
+    DbSet<Notification> Notifications { get; }
+
+    DbSet<ApiKey> ApiKeys { get; }
+
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

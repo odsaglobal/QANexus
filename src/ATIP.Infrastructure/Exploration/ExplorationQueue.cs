@@ -5,7 +5,9 @@ namespace ATIP.Infrastructure.Exploration;
 
 /// <summary>
 /// In-memory, unbounded channel that queues exploration session IDs for the background service.
-/// Survives app restarts only if the DB still shows Pending sessions (re-queue logic can be added).
+/// The DB is the durable source of truth: sessions are persisted (Pending) before being enqueued,
+/// and <c>ExplorationBackgroundService</c> re-enqueues Pending sessions (and fails orphaned Running
+/// ones) on startup, so runs survive an app restart.
 /// </summary>
 public sealed class ExplorationQueue : IExplorationQueue
 {

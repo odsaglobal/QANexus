@@ -11,8 +11,13 @@ namespace ATIP.Application.Features.Projects.Queries.ListProjects;
 public sealed class ListProjectsQueryHandler : IRequestHandler<ListProjectsQuery, PagedResult<ProjectDto>>
 {
     private readonly IApplicationDbContext _db;
+    private readonly ICurrentUser _currentUser;
 
-    public ListProjectsQueryHandler(IApplicationDbContext db) => _db = db;
+    public ListProjectsQueryHandler(IApplicationDbContext db, ICurrentUser currentUser)
+    {
+        _db = db;
+        _currentUser = currentUser;
+    }
 
     public async Task<PagedResult<ProjectDto>> Handle(ListProjectsQuery request, CancellationToken cancellationToken)
     {
@@ -45,7 +50,16 @@ public sealed class ListProjectsQueryHandler : IRequestHandler<ListProjectsQuery
             .Take(request.PageSize)
             .ToListAsync(cancellationToken);
 
-        var dtos = items.Select(ProjectDto.FromEntity).ToList();
+        var userId = _currentUser.UserId;
+        var isAdmin = _currentUser.SystemRole is SystemRole.TenantAdmin or SystemRole.PlatformAdmin;
+
+        var dtos = items.Select(p =>
+        {
+            var role = isAdmin
+                ? ProjectRole.Owner.ToString()
+                : p.Members.FirstOrDefault(m => m.UserId == userId)?.Role.ToString();
+            return ProjectDto.FromEntity(p, role);
+        }).ToList();
 
         return PagedResult<ProjectDto>.Create(dtos, request.Page, request.PageSize, totalCount);
     }

@@ -19,11 +19,14 @@ public sealed record ProjectDto
 
     public int MemberCount { get; init; }
 
+    /// <summary>The requesting user's project role (Owner/Editor/Viewer), when resolvable.</summary>
+    public string? CurrentUserRole { get; init; }
+
     public required DateTimeOffset CreatedAtUtc { get; init; }
 
     public DateTimeOffset? UpdatedAtUtc { get; init; }
 
-    public static ProjectDto FromEntity(Project p) => new()
+    public static ProjectDto FromEntity(Project p, string? currentUserRole = null) => new()
     {
         Id = p.Id,
         Name = p.Name,
@@ -32,6 +35,7 @@ public sealed record ProjectDto
         Status = p.Status.ToString(),
         EnvironmentCount = p.Environments.Count,
         MemberCount = p.Members.Count,
+        CurrentUserRole = currentUserRole,
         CreatedAtUtc = p.CreatedAtUtc,
         UpdatedAtUtc = p.UpdatedAtUtc
     };

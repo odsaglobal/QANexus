@@ -29,6 +29,8 @@ public sealed class CurrentUser : ICurrentUser
     public SystemRole? SystemRole =>
         Enum.TryParse<SystemRole>(Principal?.FindFirstValue(ClaimTypes.Role), out var role) ? role : null;
 
+    public string? IpAddress => _accessor.HttpContext?.Connection.RemoteIpAddress?.ToString();
+
     public bool IsAuthenticated => Principal?.Identity?.IsAuthenticated ?? false;
 
     private static Guid? TryParseGuid(string? value) =>

@@ -120,17 +120,22 @@ export function ProjectsPage() {
                 </TableCell>
                 <TableCell className="text-muted-foreground text-sm max-w-xs truncate">{p.description}</TableCell>
                 <TableCell onClick={(e) => e.stopPropagation()}>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                    onClick={() => {
-                      setProjectToDelete({ id: p.id, name: p.name });
-                      setDeleteDialogOpen(true);
-                    }}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
+                  {p.currentUserRole === 'Owner' ? (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                      title="Delete project"
+                      onClick={() => {
+                        setProjectToDelete({ id: p.id, name: p.name });
+                        setDeleteDialogOpen(true);
+                      }}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">{p.currentUserRole ?? '—'}</span>
+                  )}
                 </TableCell>
               </TableRow>
             ))}

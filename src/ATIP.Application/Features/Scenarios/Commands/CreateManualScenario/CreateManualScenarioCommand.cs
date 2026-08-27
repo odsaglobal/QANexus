@@ -1,10 +1,12 @@
+using ATIP.Application.Common.Security;
 using ATIP.Application.Features.Scenarios.Dtos;
+using ATIP.Domain.Enums;
 using MediatR;
 
 namespace ATIP.Application.Features.Scenarios.Commands.CreateManualScenario;
 
 /// <summary>Creates one manually-authored scenario (Source = Manual) with ordered steps.</summary>
-public sealed record CreateManualScenarioCommand : IRequest<ScenarioDto>
+public sealed record CreateManualScenarioCommand : IRequest<ScenarioDto>, IProjectScopedRequest
 {
     public Guid ProjectId { get; init; }
     public Guid FeatureId { get; init; }
@@ -17,6 +19,8 @@ public sealed record CreateManualScenarioCommand : IRequest<ScenarioDto>
     public string? JiraKey { get; init; }
     public IReadOnlyList<string>? Tags { get; init; }
     public required IReadOnlyList<CreateManualScenarioStep> Steps { get; init; }
+
+    public ProjectRole RequiredRole => ProjectRole.Editor;
 }
 
 public sealed record CreateManualScenarioStep

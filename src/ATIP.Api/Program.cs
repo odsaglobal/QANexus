@@ -86,10 +86,24 @@ builder.Services
         };
     });
 
+// API-key authentication for CI systems / scripts via the X-Api-Key header.
+builder.Services
+    .AddAuthentication()
+    .AddScheme<Microsoft.AspNetCore.Authentication.AuthenticationSchemeOptions, ApiKeyAuthenticationHandler>(
+        ApiKeyAuthenticationHandler.SchemeName, null);
+
 // JIT-provision an internal user/tenant for each Auth0 identity and enrich the principal.
 builder.Services.AddScoped<Microsoft.AspNetCore.Authentication.IClaimsTransformation, Auth0ClaimsTransformer>();
 
-builder.Services.AddAuthorization();
+// Accept either an Auth0 bearer token or an API key for any [Authorize] endpoint.
+builder.Services.AddAuthorization(options =>
+{
+    options.DefaultPolicy = new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder(
+            JwtBearerDefaults.AuthenticationScheme,
+            ApiKeyAuthenticationHandler.SchemeName)
+        .RequireAuthenticatedUser()
+        .Build();
+});
 
 // ----- CORS for the React dev server -----
 const string spaCorsPolicy = "spa";

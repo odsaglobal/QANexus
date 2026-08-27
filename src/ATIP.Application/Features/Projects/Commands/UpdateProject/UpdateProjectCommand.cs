@@ -1,10 +1,12 @@
+using ATIP.Application.Common.Security;
 using ATIP.Application.Features.Projects.Dtos;
+using ATIP.Domain.Enums;
 using MediatR;
 
 namespace ATIP.Application.Features.Projects.Commands.UpdateProject;
 
 /// <summary>Updates the mutable fields of an existing project.</summary>
-public sealed record UpdateProjectCommand : IRequest<ProjectDto>
+public sealed record UpdateProjectCommand : IRequest<ProjectDto>, IProjectScopedRequest
 {
     public Guid Id { get; init; }
 
@@ -14,4 +16,7 @@ public sealed record UpdateProjectCommand : IRequest<ProjectDto>
 
     /// <summary>One of the <c>ProjectStatus</c> names: Active, Archived, Suspended.</summary>
     public required string Status { get; init; }
+
+    public Guid ProjectId => Id;
+    public ProjectRole RequiredRole => ProjectRole.Owner;
 }

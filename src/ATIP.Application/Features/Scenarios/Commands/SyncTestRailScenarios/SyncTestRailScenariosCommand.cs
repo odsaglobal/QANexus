@@ -1,9 +1,11 @@
+using ATIP.Application.Common.Security;
 using ATIP.Application.Features.Scenarios.Dtos;
+using ATIP.Domain.Enums;
 using MediatR;
 
 namespace ATIP.Application.Features.Scenarios.Commands.SyncTestRailScenarios;
 
-public sealed record SyncTestRailScenariosCommand : IRequest<IReadOnlyList<ScenarioDto>>
+public sealed record SyncTestRailScenariosCommand : IRequest<IReadOnlyList<ScenarioDto>>, IProjectScopedRequest
 {
     public Guid ProjectId { get; init; }
     public Guid FeatureId { get; init; }
@@ -16,4 +18,6 @@ public sealed record SyncTestRailScenariosCommand : IRequest<IReadOnlyList<Scena
 
     /// <summary>Optional TestRail section id filter.</summary>
     public int? SectionId { get; init; }
+
+    public ProjectRole RequiredRole => ProjectRole.Editor;
 }

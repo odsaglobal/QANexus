@@ -12,15 +12,18 @@ public sealed class RunTestSuiteCommandHandler : IRequestHandler<RunTestSuiteCom
     private readonly IApplicationDbContext _db;
     private readonly ICurrentUser _currentUser;
     private readonly IExplorationQueue _queue;
+    private readonly IAuditLogger _audit;
 
     public RunTestSuiteCommandHandler(
         IApplicationDbContext db,
         ICurrentUser currentUser,
-        IExplorationQueue queue)
+        IExplorationQueue queue,
+        IAuditLogger audit)
     {
         _db = db;
         _currentUser = currentUser;
         _queue = queue;
+        _audit = audit;
     }
 
     public async Task<ExplorationSessionDto> Handle(RunTestSuiteCommand request, CancellationToken cancellationToken)
@@ -81,6 +84,8 @@ public sealed class RunTestSuiteCommandHandler : IRequestHandler<RunTestSuiteCom
         await _db.SaveChangesAsync(cancellationToken);
 
         await _queue.EnqueueAsync(session.Id, cancellationToken);
+
+        await _audit.LogAsync("suite.run", "Suite", $"Ran suite \"{suite.Name}\" ({suite.Scenarios.Count} scenarios)", nameof(TestSuite), suite.Id, cancellationToken);
 
         return ExplorationSessionDto.FromEntity(session);
     }

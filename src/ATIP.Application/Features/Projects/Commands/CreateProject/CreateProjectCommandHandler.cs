@@ -13,11 +13,13 @@ public sealed class CreateProjectCommandHandler : IRequestHandler<CreateProjectC
 {
     private readonly IApplicationDbContext _db;
     private readonly ICurrentUser _currentUser;
+    private readonly IAuditLogger _audit;
 
-    public CreateProjectCommandHandler(IApplicationDbContext db, ICurrentUser currentUser)
+    public CreateProjectCommandHandler(IApplicationDbContext db, ICurrentUser currentUser, IAuditLogger audit)
     {
         _db = db;
         _currentUser = currentUser;
+        _audit = audit;
     }
 
     public async Task<ProjectDto> Handle(CreateProjectCommand request, CancellationToken cancellationToken)
@@ -57,6 +59,8 @@ public sealed class CreateProjectCommandHandler : IRequestHandler<CreateProjectC
 
         _db.Projects.Add(project);
         await _db.SaveChangesAsync(cancellationToken);
+
+        await _audit.LogAsync("project.created", "Project", $"Created project \"{project.Name}\"", nameof(Project), project.Id, cancellationToken);
 
         return ProjectDto.FromEntity(project);
     }

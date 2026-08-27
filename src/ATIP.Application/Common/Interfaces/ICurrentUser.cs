@@ -16,5 +16,8 @@ public interface ICurrentUser
 
     SystemRole? SystemRole { get; }
 
+    /// <summary>Originating IP address of the current request, when available.</summary>
+    string? IpAddress { get; }
+
     bool IsAuthenticated { get; }
 }

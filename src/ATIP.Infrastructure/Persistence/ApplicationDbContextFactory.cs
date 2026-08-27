@@ -44,6 +44,7 @@ public sealed class ApplicationDbContextFactory : IDesignTimeDbContextFactory<Ap
         public Guid? TenantId => null;
         public string? Email => null;
         public SystemRole? SystemRole => null;
+        public string? IpAddress => null;
         public bool IsAuthenticated => false;
     }
 }

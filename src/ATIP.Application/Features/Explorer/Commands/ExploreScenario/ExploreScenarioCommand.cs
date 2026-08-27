@@ -1,10 +1,12 @@
+using ATIP.Application.Common.Security;
 using ATIP.Application.Features.Explorer.Dtos;
+using ATIP.Domain.Enums;
 using MediatR;
 
 namespace ATIP.Application.Features.Explorer.Commands.ExploreScenario;
 
 /// <summary>Runs a scenario-scoped exploration: walks just this scenario's steps and records per-step results.</summary>
-public sealed record ExploreScenarioCommand : IRequest<ExplorationSessionDto>
+public sealed record ExploreScenarioCommand : IRequest<ExplorationSessionDto>, IProjectScopedRequest
 {
     public Guid ProjectId { get; init; }
     public Guid ScenarioId { get; init; }
@@ -14,4 +16,6 @@ public sealed record ExploreScenarioCommand : IRequest<ExplorationSessionDto>
 
     /// <summary>Optional environment; when omitted the project's default (or first) environment is used.</summary>
     public Guid? EnvironmentId { get; init; }
+
+    public ProjectRole RequiredRole => ProjectRole.Editor;
 }
