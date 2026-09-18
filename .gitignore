@@ -33,3 +33,6 @@ src/ATIP.Api/storage/
 
 # OS
 .DS_Store
+
+# local developer secrets
+src/ATIP.Api/appsettings.Development.json
