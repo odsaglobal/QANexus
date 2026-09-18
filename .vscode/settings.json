@@ -1,0 +1,7 @@
+{
+  // .NET's JSON configuration provider allows comments and trailing commas, so appsettings files are
+  // JSONC. Without this association VS Code flags every commented-out block as an error.
+  "files.associations": {
+    "appsettings*.json": "jsonc"
+  }
+}

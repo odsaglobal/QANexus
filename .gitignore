@@ -19,9 +19,14 @@ frontend/node_modules/
 *.env
 appsettings.*.Local.json
 
+# Runtime artifacts written by IFileStorage at execution time: per-step screenshots,
+# DOM snapshots and uploaded requirement documents. Regenerated on every run, so they are
+# machine state rather than source. Ignoring the directory (not the file extensions) keeps
+# real app assets such as frontend/public and frontend/src/assets committable.
+src/ATIP.Api/storage/
+
 # Playwright artifacts
 .playwright-mcp/
-*.png
 
 # Logs
 *.log

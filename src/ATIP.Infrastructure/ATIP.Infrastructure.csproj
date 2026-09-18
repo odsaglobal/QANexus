@@ -5,6 +5,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Lets the test project exercise pure internal helpers (descriptor condensing, assertion
+         comparison) directly, rather than widening the public API just to make them testable. -->
+    <InternalsVisibleTo Include="ATIP.Application.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
     <PackageReference Include="DocumentFormat.OpenXml" Version="3.1.1" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
@@ -20,6 +26,10 @@
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.10" />
     <PackageReference Include="Microsoft.Playwright" Version="1.52.0" />
     <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
+    <!-- ADO.NET providers for the database test driver. Test databases are rarely the same engine
+         as the product's own store, so the three most common ones are supported out of the box. -->
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.0.2" />
+    <PackageReference Include="MySqlConnector" Version="2.4.0" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
     <PackageReference Include="PdfPig" Version="0.1.9" />
     <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.21.0" />

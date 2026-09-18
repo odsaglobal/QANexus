@@ -70,14 +70,17 @@ builder.Services
         };
 
         // WebSocket clients can't send an Authorization header, so SignalR passes the token
-        // as the `access_token` query string parameter for hub connections.
+        // as the `access_token` query string parameter for hub connections. <img>/<a> tags served by
+        // FilesController (screenshots, DOM snapshots) have the same limitation, so the same bypass
+        // applies to that path too.
         options.Events = new JwtBearerEvents
         {
             OnMessageReceived = context =>
             {
                 var accessToken = context.Request.Query["access_token"];
                 var path = context.HttpContext.Request.Path;
-                if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
+                if (!string.IsNullOrEmpty(accessToken)
+                    && (path.StartsWithSegments("/hubs") || path.StartsWithSegments("/api/v1/files")))
                 {
                     context.Token = accessToken;
                 }
@@ -154,7 +157,7 @@ app.UseExceptionHandler();
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
-    app.UseSwaggerUI(ui => ui.SwaggerEndpoint("/swagger/v1/swagger.json", "ATIP API v1"));
+    app.UseSwaggerUI(ui => ui.SwaggerEndpoint("/swagger/v1/swagger.json", "ATiP API v1"));
     await app.ApplyMigrationsAsync();
 }
 

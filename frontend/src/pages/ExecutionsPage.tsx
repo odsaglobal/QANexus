@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
-import { Clock3, Play, Search, Loader2, RefreshCw } from 'lucide-react';
+import { Clock3, Play, Search, Loader2, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
@@ -15,11 +15,13 @@ import { Alert } from '../components/ui/alert';
 import { listProjects } from '../api/projects';
 import { listExplorationSessions } from '../api/explorer';
 import { listScenarios, runScenario } from '../api/scenarios';
-import { listTestSuites, runTestSuite } from '../api/suites';import { listEnvironments } from '../api/environments';
+import { listTestSuites, runTestSuite } from '../api/suites';
+import { listEnvironments } from '../api/environments';
 import { getStoredProjectId, setStoredProjectId, getSelectedEnvironmentId } from '../lib/projectSelection';
 import { getErrorMessage } from '../lib/apiClient';
 import type { ExplorationSession, ExplorationStatus, Scenario, EnvironmentModel, TestSuite } from '../api/types';
 import { LiveExplorationDialog } from './project/LiveExplorationDialog';
+import { RunReportDialog } from './project/RunReportDialog';
 
 const activeStatuses: ExplorationStatus[] = ['Pending', 'Running'];
 
@@ -47,13 +49,20 @@ function shortId(id: string): string {
   return `E-${id.slice(0, 8)}`;
 }
 
+const PAGE_SIZES = [10, 25, 50, 100];
+
 export function ExecutionsPage() {
   const [selectedProjectId, setSelectedProjectId] = useState<string>(() => getStoredProjectId());
   const [q, setQ] = useState('');
   const [status, setStatus] = useState<'all' | ExplorationStatus>('all');
+  const [suiteFilter, setSuiteFilter] = useState<string>('all');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
   const [runDialogOpen, setRunDialogOpen] = useState(false);
   const [liveSessionId, setLiveSessionId] = useState<string | null>(null);
   const [liveTitle, setLiveTitle] = useState('');
+  const [reportSession, setReportSession] = useState<ExplorationSession | null>(null);
+  const [reportTitle, setReportTitle] = useState('');
 
   const projectsQuery = useQuery({
     queryKey: ['projects', { page: 1, pageSize: 100 }],
@@ -93,9 +102,19 @@ export function ExecutionsPage() {
     enabled: Boolean(activeProjectId),
   });
 
-  const sessions = useMemo(() => sessionsQuery.data ?? [], [sessionsQuery.data]);
-  const scenarios = scenariosQuery.data ?? [];
-  const suites = suitesQuery.data ?? [];
+  // ExplorationSession backs two different things: replays of saved scenarios/suites, and raw site
+  // crawls. Only replays are executions — a crawl has no steps (so its report would be empty) and a
+  // failed crawl would otherwise count against the pass rate below.
+  const sessions = useMemo(
+    () =>
+      (sessionsQuery.data ?? []).filter(
+        (s) => s.suiteId || s.scenarioId || s.recordedScenarioId,
+      ),
+    [sessionsQuery.data],
+  );
+  const scenarios = useMemo(() => scenariosQuery.data ?? [], [scenariosQuery.data]);
+  const suites = useMemo(() => suitesQuery.data ?? [], [suitesQuery.data]);
+
   const scenarioTitle = useMemo(() => {
     const map = new Map(scenarios.map((s) => [s.id, s.title]));
     const suiteMap = new Map(suites.map((s) => [s.id, s.name]));
@@ -103,12 +122,41 @@ export function ExecutionsPage() {
       if (session.suiteId && suiteMap.has(session.suiteId)) return `Suite: ${suiteMap.get(session.suiteId)}`;
       if (session.scenarioId && map.has(session.scenarioId)) return map.get(session.scenarioId)!;
       if (session.recordedScenarioId && map.has(session.recordedScenarioId)) return `Recorded: ${map.get(session.recordedScenarioId)}`;
+      // The scenario was deleted after the run; the prompt is the next best description.
       if (session.prompt) return session.prompt;
       if (session.suiteId) return 'Suite run';
-      if (session.scenarioId) return 'Scenario run';
-      return 'Application exploration';
+      return 'Scenario run';
     };
   }, [scenarios, suites]);
+
+  /**
+   * Suites a session relates to. A suite run belongs to exactly one suite; a scenario run belongs to
+   * none, but its scenario may be a member of suites — worth surfacing so "show me everything in the
+   * regression suite" also finds the standalone runs of those scenarios.
+   */
+  const sessionSuites = useMemo(() => {
+    const suiteNames = new Map(suites.map((s) => [s.id, s.name]));
+    const byScenario = new Map<string, string[]>();
+    for (const suite of suites) {
+      for (const member of suite.scenarios) {
+        byScenario.set(member.scenarioId, [...(byScenario.get(member.scenarioId) ?? []), suite.id]);
+      }
+    }
+
+    return (session: ExplorationSession): { ids: string[]; names: string[]; direct: boolean } => {
+      if (session.suiteId) {
+        const name = suiteNames.get(session.suiteId);
+        return { ids: [session.suiteId], names: name ? [name] : [], direct: true };
+      }
+      const scenarioId = session.scenarioId ?? session.recordedScenarioId;
+      const ids = scenarioId ? byScenario.get(scenarioId) ?? [] : [];
+      return {
+        ids,
+        names: ids.map((id) => suiteNames.get(id)).filter((n): n is string => Boolean(n)),
+        direct: false,
+      };
+    };
+  }, [suites]);
 
   const filtered = useMemo(() => {
     const needle = q.toLowerCase();
@@ -117,10 +165,21 @@ export function ExecutionsPage() {
         const label = scenarioTitle(s).toLowerCase();
         const textOk = !needle || label.includes(needle) || shortId(s.id).toLowerCase().includes(needle);
         const statusOk = status === 'all' || s.status === status;
-        return textOk && statusOk;
+        const suiteOk = suiteFilter === 'all' || sessionSuites(s).ids.includes(suiteFilter);
+        return textOk && statusOk && suiteOk;
       })
       .sort((a, b) => new Date(b.createdAtUtc).getTime() - new Date(a.createdAtUtc).getTime());
-  }, [sessions, q, status, scenarioTitle]);
+  }, [sessions, q, status, suiteFilter, scenarioTitle, sessionSuites]);
+
+  // Any filter change can shrink the result set below the current page.
+  useEffect(() => setPage(1), [q, status, suiteFilter, pageSize, activeProjectId]);
+
+  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const currentPage = Math.min(page, pageCount);
+  const visible = useMemo(
+    () => filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize),
+    [filtered, currentPage, pageSize],
+  );
 
   const total = sessions.length;
   const completed = sessions.filter((s) => s.status === 'Completed').length;
@@ -172,7 +231,7 @@ export function ExecutionsPage() {
             </Card>
           </div>
 
-          <div className="flex gap-3">
+          <div className="flex flex-wrap gap-3">
             <div className="relative max-w-sm w-full">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input className="pl-9" placeholder="Search by id or scenario..." value={q} onChange={(e) => setQ(e.target.value)} />
@@ -189,6 +248,16 @@ export function ExecutionsPage() {
               <option value="Pending">Pending</option>
               <option value="Cancelled">Cancelled</option>
             </select>
+            <select
+              value={suiteFilter}
+              onChange={(e) => setSuiteFilter(e.target.value)}
+              className="h-10 max-w-[240px] rounded-md border border-input bg-background px-3 text-sm"
+            >
+              <option value="all">All suites</option>
+              {suites.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
           </div>
 
           <Card>
@@ -198,6 +267,7 @@ export function ExecutionsPage() {
                   <TableRow>
                     <TableHead>ID</TableHead>
                     <TableHead>Scenario</TableHead>
+                    <TableHead>Suite</TableHead>
                     <TableHead>Started</TableHead>
                     <TableHead>Duration</TableHead>
                     <TableHead>Status</TableHead>
@@ -207,25 +277,45 @@ export function ExecutionsPage() {
                 <TableBody>
                   {sessionsQuery.isLoading && (
                     <TableRow>
-                      <TableCell colSpan={6} className="text-center py-10 text-muted-foreground text-sm">
+                      <TableCell colSpan={7} className="text-center py-10 text-muted-foreground text-sm">
                         <Loader2 className="h-4 w-4 animate-spin mx-auto mb-1" /> Loading executions…
                       </TableCell>
                     </TableRow>
                   )}
                   {!sessionsQuery.isLoading && filtered.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={6} className="text-center py-10 text-muted-foreground text-sm">
-                        No executions yet. Click “Run scenario” to execute an explored scenario.
+                      <TableCell colSpan={7} className="text-center py-10 text-muted-foreground text-sm">
+                        {sessions.length === 0
+                          ? 'No executions yet. Click “Run” to execute an explored scenario.'
+                          : 'No executions match these filters.'}
                       </TableCell>
                     </TableRow>
                   )}
-                  {filtered.map((s) => {
+                  {visible.map((s) => {
                     const title = scenarioTitle(s);
                     const live = activeStatuses.includes(s.status);
+                    const suiteInfo = sessionSuites(s);
                     return (
                       <TableRow key={s.id}>
                         <TableCell className="font-medium font-mono text-xs">{shortId(s.id)}</TableCell>
-                        <TableCell className="max-w-[420px] truncate" title={title}>{title}</TableCell>
+                        <TableCell className="max-w-[320px] truncate" title={title}>{title}</TableCell>
+                        <TableCell className="max-w-[200px] text-xs">
+                          {suiteInfo.names.length === 0 ? (
+                            <span className="text-muted-foreground">—</span>
+                          ) : (
+                            <span
+                              className={suiteInfo.direct ? 'truncate' : 'truncate text-muted-foreground'}
+                              title={
+                                suiteInfo.direct
+                                  ? `Run as part of ${suiteInfo.names[0]}`
+                                  : `This scenario belongs to: ${suiteInfo.names.join(', ')}`
+                              }
+                            >
+                              {suiteInfo.names[0]}
+                              {suiteInfo.names.length > 1 && ` +${suiteInfo.names.length - 1}`}
+                            </span>
+                          )}
+                        </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
                           {s.startedAtUtc ? new Date(s.startedAtUtc).toLocaleString() : new Date(s.createdAtUtc).toLocaleString()}
                         </TableCell>
@@ -234,9 +324,17 @@ export function ExecutionsPage() {
                         <TableCell className="text-right">
                           <Button
                             variant="ghost" size="sm" className="h-7"
-                            onClick={() => { setLiveTitle(title); setLiveSessionId(s.id); }}
+                            onClick={() => {
+                              if (live) {
+                                setLiveTitle(title);
+                                setLiveSessionId(s.id);
+                              } else {
+                                setReportTitle(title);
+                                setReportSession(s);
+                              }
+                            }}
                           >
-                            {live ? 'Watch live' : 'View'}
+                            {live ? 'Watch live' : 'View report'}
                           </Button>
                         </TableCell>
                       </TableRow>
@@ -244,6 +342,45 @@ export function ExecutionsPage() {
                   })}
                 </TableBody>
               </Table>
+
+              {filtered.length > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3 mt-3">
+                  <p className="text-xs text-muted-foreground">
+                    Showing {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, filtered.length)} of{' '}
+                    {filtered.length}
+                    {filtered.length !== sessions.length && ` (filtered from ${sessions.length})`}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={pageSize}
+                      onChange={(e) => setPageSize(Number(e.target.value))}
+                      className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                      aria-label="Rows per page"
+                    >
+                      {PAGE_SIZES.map((n) => (
+                        <option key={n} value={n}>{n} / page</option>
+                      ))}
+                    </select>
+                    <Button
+                      variant="outline" size="sm" className="h-8"
+                      disabled={currentPage <= 1}
+                      onClick={() => setPage(currentPage - 1)}
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                    </Button>
+                    <span className="text-xs tabular-nums text-muted-foreground">
+                      {currentPage} / {pageCount}
+                    </span>
+                    <Button
+                      variant="outline" size="sm" className="h-8"
+                      disabled={currentPage >= pageCount}
+                      onClick={() => setPage(currentPage + 1)}
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
         </>
@@ -270,6 +407,17 @@ export function ExecutionsPage() {
           mode="run"
           open={!!liveSessionId}
           onClose={() => { setLiveSessionId(null); sessionsQuery.refetch(); }}
+        />
+      )}
+
+      {reportSession && (
+        <RunReportDialog
+          session={reportSession}
+          projectId={activeProjectId}
+          title={reportTitle}
+          projectName={activeProject?.name ?? ''}
+          open={!!reportSession}
+          onClose={() => setReportSession(null)}
         />
       )}
     </div>

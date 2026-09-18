@@ -25,7 +25,6 @@ public sealed class UpdateTestSuiteCommandHandler : IRequestHandler<UpdateTestSu
             ?? throw new ForbiddenAccessException("No tenant context is available for the current user.");
 
         var suite = await _db.TestSuites
-            .Include(s => s.Scenarios)
             .FirstOrDefaultAsync(s => s.Id == request.Id && s.ProjectId == request.ProjectId, cancellationToken)
             ?? throw new NotFoundException(nameof(TestSuite), request.Id);
 

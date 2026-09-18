@@ -129,6 +129,8 @@ namespace ATIP.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("EntityId");
 
+                    b.HasIndex("TenantId");
+
                     b.HasIndex("TenantId", "TimestampUtc");
 
                     b.ToTable("audit_logs", (string)null);
@@ -197,6 +199,8 @@ namespace ATIP.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("EnvironmentId");
 
+                    b.HasIndex("TenantId");
+
                     b.ToTable("browser_profiles", (string)null);
                 });
 
@@ -251,28 +255,19 @@ namespace ATIP.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("ProjectId");
 
+                    b.HasIndex("TenantId");
+
                     b.ToTable("credentials", (string)null);
                 });
 
-            modelBuilder.Entity("ATIP.Domain.Entities.DiscoveredElement", b =>
+            modelBuilder.Entity("ATIP.Domain.Entities.DataConnection", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
-                    b.Property<string>("AiDescription")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)");
-
-                    b.Property<string>("AriaLabel")
-                        .HasMaxLength(300)
-                        .HasColumnType("character varying(300)");
-
-                    b.Property<string>("BoundingBoxJson")
-                        .HasColumnType("jsonb");
-
-                    b.Property<double>("ConfidenceScore")
-                        .HasColumnType("double precision");
+                    b.Property<int>("CommandTimeoutSeconds")
+                        .HasColumnType("integer");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
@@ -280,57 +275,46 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                     b.Property<string>("CreatedBy")
                         .HasColumnType("text");
 
-                    b.Property<string>("DataTestId")
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
-
-                    b.Property<string>("DomPath")
-                        .HasMaxLength(1000)
-                        .HasColumnType("character varying(1000)");
-
-                    b.Property<int>("ElementVersion")
-                        .HasColumnType("integer");
-
-                    b.Property<bool>("IsInteractive")
-                        .HasColumnType("boolean");
-
-                    b.Property<bool>("IsVisible")
-                        .HasColumnType("boolean");
-
-                    b.Property<DateTimeOffset?>("LastVerifiedAt")
+                    b.Property<DateTimeOffset?>("DeletedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<string>("Name")
-                        .HasMaxLength(300)
-                        .HasColumnType("character varying(300)");
+                    b.Property<byte[]>("EncryptedConnectionString")
+                        .IsRequired()
+                        .HasColumnType("bytea");
 
-                    b.Property<string>("NearbyLabelsJson")
-                        .HasColumnType("jsonb");
+                    b.Property<byte[]>("EncryptionNonce")
+                        .IsRequired()
+                        .HasColumnType("bytea");
 
-                    b.Property<Guid>("PageId")
+                    b.Property<Guid>("EnvironmentId")
                         .HasColumnType("uuid");
 
-                    b.Property<string>("Placeholder")
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)");
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("KeyId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
 
                     b.Property<Guid>("ProjectId")
                         .HasColumnType("uuid");
 
-                    b.Property<string>("Role")
-                        .HasMaxLength(80)
-                        .HasColumnType("character varying(80)");
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
 
-                    b.Property<string>("ScreenshotPath")
-                        .HasMaxLength(1024)
-                        .HasColumnType("character varying(1024)");
+                    b.Property<bool>("ReadOnly")
+                        .HasColumnType("boolean");
 
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid");
-
-                    b.Property<string>("TextContent")
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)");
 
                     b.Property<DateTimeOffset?>("UpdatedAtUtc")
                         .HasColumnType("timestamp with time zone");
@@ -340,11 +324,15 @@ namespace ATIP.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("PageId");
-
                     b.HasIndex("ProjectId");
 
-                    b.ToTable("discovered_elements", (string)null);
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("EnvironmentId", "Name")
+                        .IsUnique()
+                        .HasFilter("\"IsDeleted\" = false");
+
+                    b.ToTable("data_connections", (string)null);
                 });
 
             modelBuilder.Entity("ATIP.Domain.Entities.DiscoveredPage", b =>
@@ -423,63 +411,9 @@ namespace ATIP.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("SessionId");
 
+                    b.HasIndex("TenantId");
+
                     b.ToTable("discovered_pages", (string)null);
-                });
-
-            modelBuilder.Entity("ATIP.Domain.Entities.ElementLocator", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<double>("ConfidenceScore")
-                        .HasColumnType("double precision");
-
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("CreatedBy")
-                        .HasColumnType("text");
-
-                    b.Property<Guid>("ElementId")
-                        .HasColumnType("uuid");
-
-                    b.Property<int>("FailureCount")
-                        .HasColumnType("integer");
-
-                    b.Property<bool>("IsPrimary")
-                        .HasColumnType("boolean");
-
-                    b.Property<bool>("IsVerified")
-                        .HasColumnType("boolean");
-
-                    b.Property<DateTimeOffset?>("LastVerifiedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Strategy")
-                        .IsRequired()
-                        .HasMaxLength(40)
-                        .HasColumnType("character varying(40)");
-
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTimeOffset?>("UpdatedAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("UpdatedBy")
-                        .HasColumnType("text");
-
-                    b.Property<string>("Value")
-                        .IsRequired()
-                        .HasMaxLength(2000)
-                        .HasColumnType("character varying(2000)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ElementId");
-
-                    b.ToTable("element_locators", (string)null);
                 });
 
             modelBuilder.Entity("ATIP.Domain.Entities.Environment", b =>
@@ -528,6 +462,8 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                         .HasColumnType("jsonb");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId");
 
                     b.HasIndex("ProjectId", "Name")
                         .IsUnique();
@@ -590,6 +526,9 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                     b.Property<Guid?>("RecordedScenarioId")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("RunFilterJson")
+                        .HasColumnType("text");
+
                     b.Property<Guid?>("ScenarioId")
                         .HasColumnType("uuid");
 
@@ -626,6 +565,8 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                     b.HasIndex("ScenarioId");
 
                     b.HasIndex("SuiteId");
+
+                    b.HasIndex("TenantId");
 
                     b.ToTable("exploration_sessions", (string)null);
                 });
@@ -680,6 +621,8 @@ namespace ATIP.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("ProjectId");
 
+                    b.HasIndex("TenantId");
+
                     b.ToTable("features", (string)null);
                 });
 
@@ -729,6 +672,8 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId");
 
                     b.HasIndex("TenantId", "IsRead", "CreatedAtUtc");
 
@@ -783,6 +728,8 @@ namespace ATIP.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("TenantId");
+
                     b.HasIndex("TenantId", "Key")
                         .IsUnique();
 
@@ -822,6 +769,8 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId");
 
                     b.HasIndex("UserId");
 
@@ -894,6 +843,8 @@ namespace ATIP.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("ProjectId");
 
+                    b.HasIndex("TenantId");
+
                     b.ToTable("requirements", (string)null);
                 });
 
@@ -939,6 +890,8 @@ namespace ATIP.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("RequirementId");
 
+                    b.HasIndex("TenantId");
+
                     b.ToTable("requirement_modules", (string)null);
                 });
 
@@ -947,6 +900,9 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
+
+                    b.Property<bool>("AutoHealEnabled")
+                        .HasColumnType("boolean");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
@@ -1027,6 +983,8 @@ namespace ATIP.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("ProjectId");
 
+                    b.HasIndex("TenantId");
+
                     b.ToTable("scenarios", (string)null);
                 });
 
@@ -1057,6 +1015,11 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                     b.Property<int>("Order")
                         .HasColumnType("integer");
 
+                    b.Property<string>("Platform")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
                     b.Property<string>("RecordedActionsJson")
                         .HasColumnType("jsonb");
 
@@ -1080,6 +1043,8 @@ namespace ATIP.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("ScenarioId");
 
+                    b.HasIndex("TenantId");
+
                     b.ToTable("scenario_steps", (string)null);
                 });
 
@@ -1093,6 +1058,9 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(1000)
                         .HasColumnType("character varying(1000)");
+
+                    b.Property<string>("ChecksJson")
+                        .HasColumnType("jsonb");
 
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
@@ -1109,6 +1077,10 @@ namespace ATIP.Infrastructure.Persistence.Migrations
 
                     b.Property<Guid>("ScenarioId")
                         .HasColumnType("uuid");
+
+                    b.Property<string>("ScreenshotPath")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
 
                     b.Property<Guid>("SessionId")
                         .HasColumnType("uuid");
@@ -1136,9 +1108,13 @@ namespace ATIP.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("ProjectId");
+
                     b.HasIndex("ScenarioId");
 
                     b.HasIndex("SessionId");
+
+                    b.HasIndex("TenantId");
 
                     b.ToTable("scenario_step_results", (string)null);
                 });
@@ -1167,6 +1143,11 @@ namespace ATIP.Infrastructure.Persistence.Migrations
 
                     b.Property<bool>("IsDeleted")
                         .HasColumnType("boolean");
+
+                    b.Property<bool>("IsOnboarded")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
 
                     b.Property<string>("Name")
                         .IsRequired()
@@ -1242,6 +1223,8 @@ namespace ATIP.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("ProjectId");
 
+                    b.HasIndex("TenantId");
+
                     b.HasIndex("EnvironmentId", "Name")
                         .IsUnique();
 
@@ -1291,6 +1274,8 @@ namespace ATIP.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("ProjectId");
 
+                    b.HasIndex("TenantId");
+
                     b.ToTable("test_suites", (string)null);
                 });
 
@@ -1328,10 +1313,153 @@ namespace ATIP.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("ScenarioId");
 
+                    b.HasIndex("TenantId");
+
                     b.HasIndex("SuiteId", "ScenarioId")
                         .IsUnique();
 
                     b.ToTable("test_suite_scenarios", (string)null);
+                });
+
+            modelBuilder.Entity("ATIP.Domain.Entities.UiElement", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("AccessibleName")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CreatedBy")
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("DeletedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<DateTimeOffset?>("LastResolvedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<string>("Platform")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Role")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<string>("ScreenUrlPattern")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("ProjectId", "Key")
+                        .IsUnique()
+                        .HasFilter("\"IsDeleted\" = false");
+
+                    b.ToTable("ui_elements", (string)null);
+                });
+
+            modelBuilder.Entity("ATIP.Domain.Entities.UiElementLocator", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CreatedBy")
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("ElementId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("FailureCount")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("IsQuarantined")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset?>("LastFailedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastSucceededAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Origin")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<int>("Rank")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Strategy")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<int>("SuccessCount")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Value")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("ElementId", "IsQuarantined", "Rank");
+
+                    b.ToTable("ui_element_locators", (string)null);
                 });
 
             modelBuilder.Entity("ATIP.Domain.Entities.User", b =>
@@ -1448,7 +1576,29 @@ namespace ATIP.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("FeatureId");
 
+                    b.HasIndex("ProjectId");
+
+                    b.HasIndex("TenantId");
+
                     b.ToTable("user_stories", (string)null);
+                });
+
+            modelBuilder.Entity("ATIP.Domain.Entities.ApiKey", b =>
+                {
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("ATIP.Domain.Entities.AuditLogEntry", b =>
+                {
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("ATIP.Domain.Entities.BrowserProfile", b =>
@@ -1457,6 +1607,12 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                         .WithMany("BrowserProfiles")
                         .HasForeignKey("EnvironmentId")
                         .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
                     b.Navigation("Environment");
@@ -1470,40 +1626,57 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.Navigation("Project");
                 });
 
-            modelBuilder.Entity("ATIP.Domain.Entities.DiscoveredElement", b =>
+            modelBuilder.Entity("ATIP.Domain.Entities.DataConnection", b =>
                 {
-                    b.HasOne("ATIP.Domain.Entities.DiscoveredPage", "Page")
-                        .WithMany("Elements")
-                        .HasForeignKey("PageId")
+                    b.HasOne("ATIP.Domain.Entities.Environment", null)
+                        .WithMany()
+                        .HasForeignKey("EnvironmentId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.Navigation("Page");
+                    b.HasOne("ATIP.Domain.Entities.Project", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("ATIP.Domain.Entities.DiscoveredPage", b =>
                 {
+                    b.HasOne("ATIP.Domain.Entities.Project", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.HasOne("ATIP.Domain.Entities.ExplorationSession", "Session")
                         .WithMany("Pages")
                         .HasForeignKey("SessionId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.Navigation("Session");
-                });
-
-            modelBuilder.Entity("ATIP.Domain.Entities.ElementLocator", b =>
-                {
-                    b.HasOne("ATIP.Domain.Entities.DiscoveredElement", "Element")
-                        .WithMany("Locators")
-                        .HasForeignKey("ElementId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
-                    b.Navigation("Element");
+                    b.Navigation("Session");
                 });
 
             modelBuilder.Entity("ATIP.Domain.Entities.Environment", b =>
@@ -1512,6 +1685,12 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                         .WithMany("Environments")
                         .HasForeignKey("ProjectId")
                         .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
                     b.Navigation("Project");
@@ -1531,6 +1710,12 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.Navigation("Environment");
 
                     b.Navigation("Project");
@@ -1544,7 +1729,28 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("ATIP.Domain.Entities.Project", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.Navigation("Module");
+                });
+
+            modelBuilder.Entity("ATIP.Domain.Entities.Notification", b =>
+                {
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("ATIP.Domain.Entities.Project", b =>
@@ -1566,6 +1772,12 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.HasOne("ATIP.Domain.Entities.User", "User")
                         .WithMany("ProjectMemberships")
                         .HasForeignKey("UserId")
@@ -1585,15 +1797,33 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.Navigation("Project");
                 });
 
             modelBuilder.Entity("ATIP.Domain.Entities.RequirementModule", b =>
                 {
+                    b.HasOne("ATIP.Domain.Entities.Project", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.HasOne("ATIP.Domain.Entities.Requirement", "Requirement")
                         .WithMany("Modules")
                         .HasForeignKey("RequirementId")
                         .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
                     b.Navigation("Requirement");
@@ -1607,6 +1837,18 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("ATIP.Domain.Entities.Project", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.Navigation("Feature");
                 });
 
@@ -1618,7 +1860,28 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.Navigation("Scenario");
+                });
+
+            modelBuilder.Entity("ATIP.Domain.Entities.ScenarioStepResult", b =>
+                {
+                    b.HasOne("ATIP.Domain.Entities.Project", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("ATIP.Domain.Entities.TestDataSet", b =>
@@ -1635,6 +1898,12 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.Navigation("Environment");
 
                     b.Navigation("Project");
@@ -1646,6 +1915,12 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("ProjectId")
                         .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
                     b.Navigation("Project");
@@ -1665,9 +1940,47 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.Navigation("Scenario");
 
                     b.Navigation("Suite");
+                });
+
+            modelBuilder.Entity("ATIP.Domain.Entities.UiElement", b =>
+                {
+                    b.HasOne("ATIP.Domain.Entities.Project", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("ATIP.Domain.Entities.UiElementLocator", b =>
+                {
+                    b.HasOne("ATIP.Domain.Entities.UiElement", "Element")
+                        .WithMany("Locators")
+                        .HasForeignKey("ElementId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Element");
                 });
 
             modelBuilder.Entity("ATIP.Domain.Entities.User", b =>
@@ -1689,17 +2002,19 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("ATIP.Domain.Entities.Project", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ATIP.Domain.Entities.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.Navigation("Feature");
-                });
-
-            modelBuilder.Entity("ATIP.Domain.Entities.DiscoveredElement", b =>
-                {
-                    b.Navigation("Locators");
-                });
-
-            modelBuilder.Entity("ATIP.Domain.Entities.DiscoveredPage", b =>
-                {
-                    b.Navigation("Elements");
                 });
 
             modelBuilder.Entity("ATIP.Domain.Entities.Environment", b =>
@@ -1755,6 +2070,11 @@ namespace ATIP.Infrastructure.Persistence.Migrations
             modelBuilder.Entity("ATIP.Domain.Entities.TestSuite", b =>
                 {
                     b.Navigation("Scenarios");
+                });
+
+            modelBuilder.Entity("ATIP.Domain.Entities.UiElement", b =>
+                {
+                    b.Navigation("Locators");
                 });
 
             modelBuilder.Entity("ATIP.Domain.Entities.User", b =>

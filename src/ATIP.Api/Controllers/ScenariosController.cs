@@ -3,6 +3,7 @@ using ATIP.Application.Features.Explorer.Dtos;
 using ATIP.Application.Features.Explorer.Queries.GetLatestScenarioRun;
 using ATIP.Application.Features.Scenarios.Commands.CreateManualScenario;
 using ATIP.Application.Features.Scenarios.Commands.DeleteScenario;
+using ATIP.Application.Features.Scenarios.Commands.DeleteScenarios;
 using ATIP.Application.Features.Scenarios.Commands.GenerateScenarios;
 using ATIP.Application.Features.Scenarios.Commands.GenerateScenariosFromStory;
 using ATIP.Application.Features.Scenarios.Commands.ImportScenariosFromFile;
@@ -10,6 +11,7 @@ using ATIP.Application.Features.Scenarios.Commands.ProposedSteps;
 using ATIP.Application.Features.Scenarios.Commands.SyncTestRailScenarios;
 using ATIP.Application.Features.Scenarios.Commands.UpdateScenario;
 using ATIP.Application.Features.Scenarios.Dtos;
+using ATIP.Application.Features.Scenarios.Import;
 using ATIP.Application.Features.Scenarios.Queries.GetJiraIssue;
 using ATIP.Application.Features.Scenarios.Queries.ListScenarios;
 using Microsoft.AspNetCore.Mvc;
@@ -102,18 +104,31 @@ public sealed class ScenariosController : ApiControllerBase
     }
 
     /// <summary>
+    /// Downloads the .xlsx import template: a pre-filled sample sheet plus a "How to use" sheet
+    /// describing every supported column.
+    /// </summary>
+    [HttpGet("import-template")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public IActionResult ImportTemplate()
+        => File(ScenarioImportTemplate.Build(), ScenarioImportTemplate.ContentType, ScenarioImportTemplate.FileName);
+
+    /// <summary>
     /// Imports manual test cases from CSV/XLSX and creates Manual scenarios with ordered steps.
     /// The file should include columns such as title, step/action, step_expected and optional case_id.
+    /// Optionally adds every imported scenario to a new or existing suite.
     /// </summary>
     [HttpPost("import")]
-    [ProducesResponseType(typeof(IReadOnlyList<ScenarioDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ImportScenariosResult), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<IReadOnlyList<ScenarioDto>>> Import(
+    public async Task<ActionResult<ImportScenariosResult>> Import(
         Guid projectId,
         [FromForm] Guid featureId,
         [FromForm] IFormFile file,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        [FromForm] ImportSuiteMode suiteMode = ImportSuiteMode.None,
+        [FromForm] Guid? suiteId = null,
+        [FromForm] string? newSuiteName = null)
     {
         if (file is null || file.Length == 0)
         {
@@ -130,6 +145,9 @@ public sealed class ScenariosController : ApiControllerBase
             FeatureId = featureId,
             FileName = file.FileName,
             Content = ms.ToArray(),
+            SuiteMode = suiteMode,
+            SuiteId = suiteId,
+            NewSuiteName = newSuiteName,
         }, cancellationToken);
 
         return Ok(result);
@@ -183,6 +201,24 @@ public sealed class ScenariosController : ApiControllerBase
     {
         await Mediator.Send(new DeleteScenarioCommand(id), cancellationToken);
         return NoContent();
+    }
+
+    /// <summary>Soft-deletes several scenarios at once. POST rather than DELETE because the ids travel in the body.</summary>
+    [HttpPost("bulk-delete")]
+    [ProducesResponseType(typeof(DeleteScenariosResult), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<DeleteScenariosResult>> BulkDelete(
+        Guid projectId,
+        DeleteScenariosCommand command,
+        CancellationToken cancellationToken)
+    {
+        if (projectId != command.ProjectId)
+        {
+            return BadRequest("Route projectId and body projectId do not match.");
+        }
+
+        var result = await Mediator.Send(command, cancellationToken);
+        return Ok(result);
     }
 
     /// <summary>Runs a scenario-scoped exploration that walks this scenario's steps and records per-step results.</summary>

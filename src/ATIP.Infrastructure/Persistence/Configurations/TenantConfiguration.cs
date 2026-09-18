@@ -14,6 +14,7 @@ public sealed class TenantConfiguration : IEntityTypeConfiguration<Tenant>
         builder.Property(t => t.Name).HasMaxLength(200).IsRequired();
         builder.Property(t => t.Slug).HasMaxLength(80).IsRequired();
         builder.Property(t => t.ExternalDirectoryId).HasMaxLength(200);
+        builder.Property(t => t.IsOnboarded).HasDefaultValue(false);
 
         builder.HasIndex(t => t.Slug).IsUnique();
 

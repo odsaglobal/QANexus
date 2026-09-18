@@ -10,16 +10,16 @@ public sealed class MissionAgentDecision
     /// <summary>Short reasoning for this action.</summary>
     public string? Thought { get; set; }
 
-    /// <summary>navigate | click | type | press | wait | finish</summary>
+    /// <summary>navigate | click | type | select | press | wait | finish</summary>
     public string? Action { get; set; }
 
-    /// <summary>The [ref=eN] id of the target element from the snapshot (for click/type).</summary>
+    /// <summary>The [ref=eN] id of the target element from the snapshot (for click/type/select).</summary>
     public string? Ref { get; set; }
 
-    /// <summary>URL/path (navigate), key name (press), or element-name fallback (click/type).</summary>
+    /// <summary>URL/path (navigate), key name (press), or element-name fallback (click/type/select).</summary>
     public string? Target { get; set; }
 
-    /// <summary>Text to type (for the "type" action).</summary>
+    /// <summary>Text to type (for "type"), or the exact option label to choose (for "select").</summary>
     public string? Value { get; set; }
 
     /// <summary>

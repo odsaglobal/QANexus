@@ -13,7 +13,6 @@ public sealed record DiscoveredPageDto
     public int? HttpStatusCode { get; init; }
     public string? ScreenshotPath { get; init; }
     public bool HasAccessibilityTree { get; init; }
-    public int ElementCount { get; init; }
     public int DepthFromRoot { get; init; }
     public string? DiscoveredFromUrl { get; init; }
     public required DateTimeOffset CreatedAtUtc { get; init; }
@@ -29,7 +28,6 @@ public sealed record DiscoveredPageDto
         HttpStatusCode = p.HttpStatusCode,
         ScreenshotPath = p.ScreenshotPath,
         HasAccessibilityTree = !string.IsNullOrEmpty(p.AccessibilityTreeJson),
-        ElementCount = p.Elements.Count,
         DepthFromRoot = p.DepthFromRoot,
         DiscoveredFromUrl = p.DiscoveredFromUrl,
         CreatedAtUtc = p.CreatedAtUtc,
@@ -45,7 +43,6 @@ public sealed record DiscoveredPageDetailDto
     public string? ScreenshotPath { get; init; }
     public string? DomSnapshotPath { get; init; }
     public string? AccessibilityTreeJson { get; init; }
-    public required IReadOnlyList<DiscoveredElementDto> Elements { get; init; }
 
     public static DiscoveredPageDetailDto FromEntity(DiscoveredPage p) => new()
     {
@@ -56,6 +53,5 @@ public sealed record DiscoveredPageDetailDto
         ScreenshotPath = p.ScreenshotPath,
         DomSnapshotPath = p.DomSnapshotPath,
         AccessibilityTreeJson = p.AccessibilityTreeJson,
-        Elements = p.Elements.Select(DiscoveredElementDto.FromEntity).ToList(),
     };
 }

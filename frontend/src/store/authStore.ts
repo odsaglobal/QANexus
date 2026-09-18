@@ -10,6 +10,7 @@ interface AuthState {
     email: string;
     displayName: string;
     tenantId: string;
+    tenantName?: string | null;
     systemRole: string;
   } | null;
   setSession: (result: AuthResult) => void;

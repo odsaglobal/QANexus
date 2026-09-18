@@ -50,6 +50,14 @@ public class Scenario : AuditableEntity, ITenantScoped, ISoftDeletable
     /// </summary>
     public string? PreviousStepsJson { get; set; }
 
+    /// <summary>
+    /// When true (default), a RUN that cannot replay a recorded locator — or that has no recording yet —
+    /// may fall back to one focused AI turn to re-locate the element and update the recording
+    /// ("self-healing"). When false the run stays 100% deterministic: a missing/broken locator fails the
+    /// step immediately and no LLM call is ever made. Runs that replay cleanly never call the AI either way.
+    /// </summary>
+    public bool AutoHealEnabled { get; set; } = true;
+
     public bool IsDeleted { get; set; }
 
     public DateTimeOffset? DeletedAtUtc { get; set; }

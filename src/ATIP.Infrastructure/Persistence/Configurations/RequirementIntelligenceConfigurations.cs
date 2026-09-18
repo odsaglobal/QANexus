@@ -128,6 +128,7 @@ public sealed class ScenarioStepConfiguration : IEntityTypeConfiguration<Scenari
 
         builder.Property(s => s.Action).HasMaxLength(1000).IsRequired();
         builder.Property(s => s.ExpectedResult).HasMaxLength(1000);
+        builder.Property(s => s.Platform).HasConversion<string>().HasMaxLength(40);
         builder.Property(s => s.RecordedActionsJson).HasColumnType("jsonb");
         builder.Property(s => s.ReviewReason).HasMaxLength(1000);
 

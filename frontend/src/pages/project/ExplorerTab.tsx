@@ -2,10 +2,10 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboa
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Play, Loader2, Compass, Sparkles, ListPlus, CheckCircle2, XCircle, Wrench, MinusCircle,
-  Terminal, Layers, FileText, RotateCcw, Search, ChevronsUpDown, Check,
+  Terminal, Layers, FileText, RotateCcw, Search, ChevronsUpDown, Check, ShieldCheck, Square,
 } from 'lucide-react';
 import type { Scenario, StepRunStatus, TestSuite } from '../../api/types';
-import { getExplorationSession, startExploration } from '../../api/explorer';
+import { cancelExploration, getExplorationSession, startExploration } from '../../api/explorer';
 import { listScenarios, exploreScenario, applyProposedSteps } from '../../api/scenarios';
 import { listRequirements, getRequirement } from '../../api/requirements';
 import { listEnvironments } from '../../api/environments';
@@ -13,7 +13,8 @@ import { createTestSuite, listTestSuites, updateTestSuite } from '../../api/suit
 import { getSelectedEnvironmentId } from '../../lib/projectSelection';
 import { getErrorMessage } from '../../lib/apiClient';
 import { useExplorationStream } from '../../lib/useExplorationStream';
-import type { ExplorationLiveStep, ExplorationLogLine } from '../../lib/useExplorationStream';
+import type { ExplorationLiveStep, ExplorationLogLine, ExplorationLiveTab } from '../../lib/useExplorationStream';
+import { LiveTabsBar } from './LiveExplorationDialog';
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
 import { Alert } from '../../components/ui/alert';
@@ -29,6 +30,8 @@ type Mode = 'scenario' | 'prompt';
 
 const logColor: Record<string, string> = {
   info: 'text-slate-300', success: 'text-green-400', warn: 'text-amber-400', error: 'text-red-400',
+  // Dispatched but not yet verified — dimmed until its outcome rewrites the line.
+  pending: 'text-slate-400',
 };
 
 export function ExplorerTab({ projectId }: { projectId: string }) {
@@ -51,6 +54,11 @@ export function ExplorerTab({ projectId }: { projectId: string }) {
   const { data: scenarios = [] } = useQuery({
     queryKey: ['scenarios', projectId],
     queryFn: () => listScenarios(projectId),
+  });
+
+  const { data: pickerSuites = [] } = useQuery({
+    queryKey: ['test-suites', projectId],
+    queryFn: () => listTestSuites(projectId),
   });
 
   // Feature labels (Module › Feature) to group scenarios in the picker.
@@ -130,6 +138,18 @@ export function ExplorerTab({ projectId }: { projectId: string }) {
     onError: (e) => setError(e instanceof Error ? e.message : getErrorMessage(e)),
   });
 
+  // Cancelling is a two-stage affair: the API flips the session to Cancelled immediately, but the agent
+  // only notices at its next turn boundary, so keep the button in its "stopping" state until the polled
+  // session actually reports a terminal status rather than snapping back to "Explore" straight away.
+  const stopMutation = useMutation({
+    mutationFn: () => cancelExploration(projectId, sessionId!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['exploration-session', projectId, sessionId] });
+      queryClient.invalidateQueries({ queryKey: ['exploration-sessions', projectId] });
+    },
+    onError: (e) => setError(getErrorMessage(e)),
+  });
+
   const resultScenario = useMemo<Scenario | null>(
     () => scenarios.find((s) => s.id === resultScenarioId) ?? null,
     [scenarios, resultScenarioId],
@@ -178,6 +198,7 @@ export function ExplorerTab({ projectId }: { projectId: string }) {
                   <ScenarioPicker
                     scenarios={scenarios}
                     featureLabels={featureLabels}
+                    suites={pickerSuites}
                     value={scenarioId}
                     onChange={setScenarioId}
                     disabled={running}
@@ -215,6 +236,19 @@ export function ExplorerTab({ projectId }: { projectId: string }) {
               {running ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Play className="h-4 w-4 mr-1.5" />}
               {running ? 'Exploring…' : 'Explore'}
             </Button>
+            {isLive && sessionId && (
+              <Button
+                variant="destructive"
+                disabled={stopMutation.isPending}
+                onClick={() => stopMutation.mutate()}
+                title="Stop this exploration"
+              >
+                {stopMutation.isPending
+                  ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                  : <Square className="h-4 w-4 mr-1.5" />}
+                {stopMutation.isPending ? 'Stopping…' : 'Stop'}
+              </Button>
+            )}
             {sessionId && !running && (
               <Button variant="outline" onClick={reset}>
                 <RotateCcw className="h-4 w-4 mr-1.5" /> New exploration
@@ -237,6 +271,7 @@ export function ExplorerTab({ projectId }: { projectId: string }) {
             currentUrl={stream.status?.currentUrl}
             logs={stream.logs}
             steps={stream.steps}
+            tabs={stream.tabs}
           />
           <ResultsPanel
             projectId={projectId}
@@ -261,7 +296,7 @@ export function ExplorerTab({ projectId }: { projectId: string }) {
 }
 
 function LivePanel({
-  status, frame, connected, currentUrl, logs, steps,
+  status, frame, connected, currentUrl, logs, steps, tabs,
 }: {
   status: string;
   frame: string | null;
@@ -269,6 +304,7 @@ function LivePanel({
   currentUrl?: string | null;
   logs: ExplorationLogLine[];
   steps: ExplorationLiveStep[];
+  tabs: ExplorationLiveTab[];
 }) {
   const isLive = status === 'Pending' || status === 'Running';
   return (
@@ -283,6 +319,7 @@ function LivePanel({
         </div>
       </CardHeader>
       <CardContent className="p-0">
+        <LiveTabsBar tabs={tabs} />
         <div className="relative bg-slate-900 aspect-video flex items-center justify-center">
           {frame ? (
             <img src={`data:image/jpeg;base64,${frame}`} alt="Live exploration" className="w-full h-full object-contain" />
@@ -306,7 +343,7 @@ function LivePanel({
             <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Steps executed</p>
             {steps.map((s, i) => (
               <div key={i} className="flex items-start gap-2 text-xs">
-                <StepStatusIcon status={s.status as StepRunStatus} />
+                <StepStatusIcon status={s.status as StepRunStatus | 'Running'} />
                 <span className="flex-1"><span className="text-muted-foreground mr-1">{s.stepOrder}.</span>{s.action}</span>
               </div>
             ))}
@@ -383,7 +420,15 @@ function ResultsPanel({
                   <span className="text-muted-foreground">{idx + 1}.</span>
                   <span className="flex-1">
                     {step.action}
-                    {step.expectedResult && <span className="text-xs text-muted-foreground ml-2">→ {step.expectedResult}</span>}
+                    {step.expectedResult && (
+                      <span className="mt-1 flex items-start gap-1.5 rounded-md border border-sky-200 bg-sky-50 px-2 py-1">
+                        <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-sky-600 mt-px" />
+                        <span className="text-xs text-sky-900">
+                          <span className="font-semibold uppercase tracking-wide text-[10px] text-sky-700 mr-1.5">Validate</span>
+                          {step.expectedResult}
+                        </span>
+                      </span>
+                    )}
                   </span>
                 </li>
               ))}
@@ -530,49 +575,78 @@ const sourceMeta: Record<string, { label: string; variant: 'default' | 'secondar
   TestRail: { label: 'TestRail', variant: 'outline' },
 };
 
-/** Command-palette style scenario picker: search + feature grouping + keyboard nav; fast with 1000s. */
+/** Command-palette style scenario picker: search + suite grouping/filter + keyboard nav; fast with 1000s. */
 function ScenarioPicker({
-  scenarios, featureLabels, value, onChange, disabled,
+  scenarios, featureLabels, suites, value, onChange, disabled,
 }: {
   scenarios: Scenario[];
   featureLabels: Map<string, string>;
+  suites: TestSuite[];
   value: string;
   onChange: (id: string) => void;
   disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const [suiteFilter, setSuiteFilter] = useState<string>('all');
   const [activeIndex, setActiveIndex] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
 
   const selected = scenarios.find((s) => s.id === value) ?? null;
 
+  // scenarioId -> the suites that contain it.
+  const suiteOf = useMemo(() => {
+    const map = new Map<string, { id: string; name: string }[]>();
+    for (const suite of suites) {
+      for (const ts of suite.scenarios) {
+        const arr = map.get(ts.scenarioId) ?? [];
+        arr.push({ id: suite.id, name: suite.name });
+        map.set(ts.scenarioId, arr);
+      }
+    }
+    return map;
+  }, [suites]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return scenarios;
-    const terms = q.split(/\s+/);
+    const terms = q ? q.split(/\s+/) : [];
     return scenarios.filter((s) => {
+      if (suiteFilter !== 'all' && !(suiteOf.get(s.id) ?? []).some((x) => x.id === suiteFilter)) {
+        return false;
+      }
+      if (terms.length === 0) return true;
       const feature = featureLabels.get(s.featureId) ?? '';
-      const hay = `${s.title} ${s.type} ${s.priority} ${s.source} ${feature} ${s.tags.join(' ')}`.toLowerCase();
+      const suiteNames = (suiteOf.get(s.id) ?? []).map((x) => x.name).join(' ');
+      const hay = `${s.title} ${s.type} ${s.priority} ${s.source} ${feature} ${suiteNames} ${s.tags.join(' ')}`.toLowerCase();
       return terms.every((t) => hay.includes(t));
     });
-  }, [scenarios, query, featureLabels]);
+  }, [scenarios, query, suiteFilter, featureLabels, suiteOf]);
 
   const shown = filtered.slice(0, MAX_RENDER);
 
-  // Group by feature label; preserve encounter order. Flat list drives keyboard nav.
-  const { groups, flat } = useMemo(() => {
-    const map = new Map<string, Scenario[]>();
-    for (const s of shown) {
-      const label = featureLabels.get(s.featureId) ?? 'Other scenarios';
-      if (!map.has(label)) map.set(label, []);
-      map.get(label)!.push(s);
-    }
-    const g = Array.from(map.entries());
-    return { groups: g, flat: g.flatMap(([, items]) => items) };
-  }, [shown, featureLabels]);
+  // Don't dump every scenario by default — only list once the user narrows by suite or search.
+  const shouldList = suiteFilter !== 'all' || query.trim().length > 0;
 
-  useEffect(() => { setActiveIndex(0); }, [query, open]);
+  // Group by suite; preserve suite order, with a trailing "Not in a suite" group. Flat list drives keyboard nav.
+  const { groups, flat } = useMemo(() => {
+    if (!shouldList) return { groups: [] as [string, Scenario[]][], flat: [] as Scenario[] };
+    let g: [string, Scenario[]][];
+    if (suiteFilter !== 'all') {
+      const suite = suites.find((s) => s.id === suiteFilter);
+      g = [[suite?.name ?? 'Suite', shown]];
+    } else {
+      g = [];
+      for (const suite of suites) {
+        const items = shown.filter((s) => (suiteOf.get(s.id) ?? []).some((x) => x.id === suite.id));
+        if (items.length) g.push([suite.name, items]);
+      }
+      const ungrouped = shown.filter((s) => !(suiteOf.get(s.id)?.length));
+      if (ungrouped.length) g.push([suites.length ? 'Not in a suite' : 'All scenarios', ungrouped]);
+    }
+    return { groups: g, flat: g.flatMap(([, items]) => items) };
+  }, [shown, suites, suiteFilter, suiteOf, shouldList]);
+
+  useEffect(() => { setActiveIndex(0); }, [query, suiteFilter, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -626,13 +700,46 @@ function ScenarioPicker({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={onKeyDown}
-              placeholder="Search by title, feature, type, priority, source or tag…"
+              placeholder="Search by title, suite, type, priority, source or tag…"
               className="h-14 border-0 pl-11 text-base focus-visible:ring-0 focus-visible:ring-offset-0"
             />
           </div>
 
+          {suites.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-3 py-2">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mr-1">Suite</span>
+              <button
+                type="button"
+                onClick={() => setSuiteFilter('all')}
+                className={cn('rounded-full px-2.5 py-1 text-xs font-medium transition-colors',
+                  suiteFilter === 'all' ? 'bg-violet-600 text-white' : 'bg-muted text-muted-foreground hover:text-foreground')}
+              >
+                All ({scenarios.length})
+              </button>
+              {suites.map((suite) => (
+                <button
+                  type="button"
+                  key={suite.id}
+                  onClick={() => setSuiteFilter(suite.id)}
+                  className={cn('rounded-full px-2.5 py-1 text-xs font-medium transition-colors',
+                    suiteFilter === suite.id ? 'bg-violet-600 text-white' : 'bg-muted text-muted-foreground hover:text-foreground')}
+                >
+                  {suite.name} ({suite.scenarioCount})
+                </button>
+              ))}
+            </div>
+          )}
+
           <div ref={listRef} className="max-h-[62vh] overflow-y-auto py-1.5">
-            {flat.length === 0 ? (
+            {!shouldList ? (
+              <div className="px-4 py-12 text-center">
+                <Layers className="h-6 w-6 mx-auto mb-2 text-muted-foreground/50" />
+                <p className="text-sm text-muted-foreground">
+                  {suites.length > 0 ? 'Pick a suite above' : 'Start typing'} or search to find a scenario.
+                </p>
+                <p className="text-xs text-muted-foreground/70 mt-1">{scenarios.length} scenario{scenarios.length === 1 ? '' : 's'} in this project.</p>
+              </div>
+            ) : flat.length === 0 ? (
               <div className="px-4 py-12 text-center">
                 <Search className="h-6 w-6 mx-auto mb-2 text-muted-foreground/50" />
                 <p className="text-sm text-muted-foreground">No scenarios match &ldquo;{query}&rdquo;.</p>
@@ -652,7 +759,7 @@ function ScenarioPicker({
                   return (
                     <button
                       type="button"
-                      key={s.id}
+                      key={`${label}-${s.id}`}
                       data-idx={idx}
                       onMouseEnter={() => setActiveIndex(idx)}
                       onClick={() => commit(s)}
@@ -692,12 +799,13 @@ function ScenarioPicker({
   );
 }
 
-function StepStatusIcon({ status }: { status?: StepRunStatus }) {
+function StepStatusIcon({ status }: { status?: StepRunStatus | 'Running' }) {
   switch (status) {
     case 'Passed': return <CheckCircle2 className="h-4 w-4 text-green-600" />;
     case 'Healed': return <Wrench className="h-4 w-4 text-amber-600" />;
     case 'Failed': return <XCircle className="h-4 w-4 text-red-600" />;
     case 'Skipped': return <MinusCircle className="h-4 w-4 text-gray-400" />;
+    case 'Running': return <Loader2 className="h-4 w-4 animate-spin text-violet-600" />;
     default: return <span className="inline-block h-4 w-4 rounded-full border border-gray-300" />;
   }
 }

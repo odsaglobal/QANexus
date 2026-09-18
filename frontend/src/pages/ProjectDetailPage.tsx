@@ -56,19 +56,19 @@ export function ProjectDetailPage() {
     <div className="space-y-5 lg:space-y-6">
       {/* Tabs (navigation provided by the sidebar; content is driven by the route) */}
       <Tabs value={tab}>
-        <TabsContent value="overview" className="mt-6">
+        <TabsContent value="overview" className="mt-0">
           <OverviewTab projectId={projectId} />
         </TabsContent>
-        <TabsContent value="requirements" className="mt-6">
+        <TabsContent value="requirements" className="mt-0">
           <RequirementsTab projectId={projectId} />
         </TabsContent>
-        <TabsContent value="scenarios" className="mt-6">
+        <TabsContent value="scenarios" className="mt-0">
           <ScenariosTab projectId={projectId} />
         </TabsContent>
-        <TabsContent value="explorer" className="mt-6">
+        <TabsContent value="explorer" className="mt-0">
           <ExplorerTab projectId={projectId} />
         </TabsContent>
-        <TabsContent value="environments" className="mt-6">
+        <TabsContent value="environments" className="mt-0">
           <EnvironmentsTab projectId={projectId} />
         </TabsContent>
       </Tabs>

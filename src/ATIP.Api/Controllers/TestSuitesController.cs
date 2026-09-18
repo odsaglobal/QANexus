@@ -100,6 +100,10 @@ public sealed class TestSuitesController : ApiControllerBase
             ProjectId = projectId,
             SuiteId = id,
             EnvironmentId = body?.EnvironmentId,
+            Tags = body?.Tags,
+            Types = body?.Types,
+            Priorities = body?.Priorities,
+            ScenarioIds = body?.ScenarioIds,
         }, cancellationToken);
         return Accepted(result);
     }
@@ -109,4 +113,14 @@ public sealed class TestSuitesController : ApiControllerBase
 public sealed record RunTestSuiteRequest
 {
     public Guid? EnvironmentId { get; init; }
+
+    /// <summary>Facet filters; each matches any of its values, and facets combine with AND.</summary>
+    public IReadOnlyList<string>? Tags { get; init; }
+
+    public IReadOnlyList<string>? Types { get; init; }
+
+    public IReadOnlyList<string>? Priorities { get; init; }
+
+    /// <summary>Explicitly checked scenarios; AND-ed with the facets. Empty means "every match".</summary>
+    public IReadOnlyList<Guid>? ScenarioIds { get; init; }
 }

@@ -44,6 +44,4 @@ public class DiscoveredPage : AuditableEntity, ITenantScoped
     public int DepthFromRoot { get; set; }
 
     public string? DiscoveredFromUrl { get; set; }
-
-    public ICollection<DiscoveredElement> Elements { get; set; } = new List<DiscoveredElement>();
 }

@@ -4,9 +4,9 @@ using ATIP.Application.Features.Explorer.Commands.StartExploration;
 using ATIP.Application.Features.Explorer.Dtos;
 using ATIP.Application.Features.Explorer.Queries.GetDiscoveredPage;
 using ATIP.Application.Features.Explorer.Queries.GetExplorationSession;
-using ATIP.Application.Features.Explorer.Queries.ListDiscoveredElements;
 using ATIP.Application.Features.Explorer.Queries.ListDiscoveredPages;
 using ATIP.Application.Features.Explorer.Queries.ListExplorationSessions;
+using ATIP.Application.Features.Explorer.Queries.ListSessionStepResults;
 using Microsoft.AspNetCore.Mvc;
 
 namespace ATIP.Api.Controllers;
@@ -21,9 +21,9 @@ public sealed class ExplorerController : ApiControllerBase
     [HttpGet("sessions")]
     [ProducesResponseType(typeof(IReadOnlyList<ExplorationSessionDto>), StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<ExplorationSessionDto>>> ListSessions(
-        Guid projectId, CancellationToken ct)
+        Guid projectId, CancellationToken ct, [FromQuery] bool activeOnly = false)
     {
-        var result = await Mediator.Send(new ListExplorationSessionsQuery(projectId), ct);
+        var result = await Mediator.Send(new ListExplorationSessionsQuery(projectId, activeOnly), ct);
         return Ok(result);
     }
 
@@ -66,6 +66,20 @@ public sealed class ExplorerController : ApiControllerBase
         return NoContent();
     }
 
+    /// <summary>
+    /// Every persisted step result for the session (across all scenarios it ran), in execution order,
+    /// each with a screenshot reference and validation detail — the full execution trace for the
+    /// Executions "View" detail. Works for both completed and still-running sessions.
+    /// </summary>
+    [HttpGet("sessions/{sessionId:guid}/steps")]
+    [ProducesResponseType(typeof(IReadOnlyList<SessionStepResultDto>), StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<SessionStepResultDto>>> ListSessionSteps(
+        Guid projectId, Guid sessionId, CancellationToken ct)
+    {
+        var result = await Mediator.Send(new ListSessionStepResultsQuery(sessionId), ct);
+        return Ok(result);
+    }
+
     // ── Discovered Pages ───────────────────────────────────────────────────────
 
     /// <summary>Lists all pages discovered in a session.</summary>
@@ -86,21 +100,6 @@ public sealed class ExplorerController : ApiControllerBase
         Guid projectId, Guid pageId, CancellationToken ct)
     {
         var result = await Mediator.Send(new GetDiscoveredPageQuery(pageId), ct);
-        return Ok(result);
-    }
-
-    // ── Element Locator Repository ─────────────────────────────────────────────
-
-    /// <summary>Paged, searchable list of discovered elements across the project or a single page.</summary>
-    [HttpGet("elements")]
-    [ProducesResponseType(typeof(PagedResult<DiscoveredElementDto>), StatusCodes.Status200OK)]
-    public async Task<ActionResult<PagedResult<DiscoveredElementDto>>> ListElements(
-        Guid projectId,
-        [FromQuery] ListDiscoveredElementsQuery query,
-        CancellationToken ct)
-    {
-        var q = query with { ProjectId = projectId };
-        var result = await Mediator.Send(q, ct);
         return Ok(result);
     }
 }

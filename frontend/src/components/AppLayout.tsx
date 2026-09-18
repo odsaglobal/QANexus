@@ -5,15 +5,17 @@ import {
   LayoutDashboard, FolderOpen, FileText, FlaskConical,
   Play, BarChart2, Settings, ChevronDown,
   HelpCircle, Search, LogOut, User, Activity, Shield,
-  Lightbulb, Compass, Server,
+  Lightbulb, Compass, Server, ExternalLink,
 } from 'lucide-react';
 import { listEnvironments } from '../api/environments';
 import { listProjects } from '../api/projects';
 import { useAuthStore } from '../store/authStore';
 import { useAuth0 } from '@auth0/auth0-react';
-import { AtipLogo } from './AtipLogo';
+import { AtipLogo, AtipWordmark } from './AtipLogo';
 import { NotificationBell } from './NotificationBell';
-import { Avatar, AvatarFallback } from './ui/avatar';
+import { CommandSearch } from './CommandSearch';
+import { OnboardingGate } from './OnboardingGate';
+import { UserAvatar } from './UserAvatar';
 import { Button } from './ui/button';
 import { Separator } from './ui/separator';
 import { cn } from '../lib/utils';
@@ -22,7 +24,10 @@ import {
   DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
 } from './ui/dropdown-menu';
 
-const simpleNav: { label: string; to: string; icon: React.ReactNode; section?: string }[] = [
+/** Public documentation site (separate VitePress project). Configurable per deployment. */
+const DOCS_URL = import.meta.env.VITE_DOCS_URL ?? 'https://valyt2026.github.io/QANexus-docs/';
+
+const simpleNav: { label: string; to: string; icon: React.ReactNode; section?: string; external?: boolean }[] = [
   { label: 'Dashboard',      to: '/',               icon: <LayoutDashboard className="h-4 w-4" /> },
   { label: 'Projects',       to: '/projects',       icon: <FolderOpen className="h-4 w-4" />,      section: 'Projects' },
   { label: 'Environments',   to: '/environments',   icon: <Server className="h-4 w-4" />,           section: 'Projects' },
@@ -35,6 +40,7 @@ const simpleNav: { label: string; to: string; icon: React.ReactNode; section?: s
   { label: 'Agent Monitor',  to: '/agents',         icon: <Activity className="h-4 w-4" />,         section: 'System' },
   { label: 'Settings',       to: '/settings',       icon: <Settings className="h-4 w-4" />,         section: 'System' },
   { label: 'Administration', to: '/administration', icon: <Shield className="h-4 w-4" />,           section: 'System' },
+  { label: 'Help',           to: DOCS_URL,          icon: <HelpCircle className="h-4 w-4" />,       section: 'System', external: true },
 ];
 
 const navSections = [
@@ -51,10 +57,23 @@ const selectedEnvironmentStorageKey = 'atip.selectedEnvironmentId';
 export function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { logout } = useAuth0();
+  const { logout, user: auth0User } = useAuth0();
   const user = useAuthStore((s) => s.user);
   const clear = useAuthStore((s) => s.clear);
   const [darkMode, setDarkMode] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+
+  // Global command-palette shortcut (Cmd/Ctrl+K).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setSearchOpen((o) => !o);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const isActive = (to: string) => {
     const path = location.pathname;
@@ -157,13 +176,6 @@ export function AppLayout() {
     logout({ logoutParams: { returnTo: `${window.location.origin}/login` } });
   };
 
-  const initials = user?.displayName
-    ?.split(' ')
-    .map((n) => n[0])
-    .slice(0, 2)
-    .join('')
-    .toUpperCase() ?? 'U';
-
   return (
     <div className="flex h-screen bg-gray-50 overflow-hidden">
       {/* ── Sidebar ── */}
@@ -172,8 +184,8 @@ export function AppLayout() {
         <div className="flex items-center gap-2.5 px-4 h-14 border-b border-border flex-shrink-0">
           <AtipLogo size={38} />
           <div className="leading-tight">
-            <div className="text-[22px] font-extrabold tracking-tight" style={{ color: '#1f2a44' }}>ATiP</div>
-            <div className="text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+            <AtipWordmark size={22} />
+            <div className="mt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
               AI Test Platform
             </div>
           </div>
@@ -190,6 +202,21 @@ export function AppLayout() {
               )}
               <div className="space-y-0.5">
                 {section.items.map((item) => {
+                  if (item.external) {
+                    return (
+                      <a
+                        key={item.to + item.label}
+                        href={item.to}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+                      >
+                        <span className="flex-shrink-0 text-gray-400">{item.icon}</span>
+                        {item.label}
+                        <ExternalLink className="h-3 w-3 ml-auto text-gray-400" />
+                      </a>
+                    );
+                  }
                   const active = isActive(item.to);
                   return (
                     <RouterLink
@@ -297,22 +324,35 @@ export function AppLayout() {
           </div>
 
           <div className="flex items-center gap-1">
-            <Button variant="ghost" size="icon" className="text-muted-foreground h-8 w-8">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="text-muted-foreground h-8 w-8"
+              aria-label="Search"
+              onClick={() => setSearchOpen(true)}
+            >
               <Search className="h-4 w-4" />
             </Button>
             <NotificationBell />
-            <Button variant="ghost" size="icon" className="text-muted-foreground h-8 w-8">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="text-muted-foreground h-8 w-8"
+              aria-label="Help & documentation"
+              onClick={() => window.open(DOCS_URL, '_blank', 'noopener,noreferrer')}
+            >
               <HelpCircle className="h-4 w-4" />
             </Button>
             <Separator orientation="vertical" className="h-6 mx-1" />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-gray-100 transition-colors">
-                  <Avatar className="h-7 w-7">
-                    <AvatarFallback className="bg-violet-100 text-violet-700 text-xs font-bold">
-                      {initials}
-                    </AvatarFallback>
-                  </Avatar>
+                  <UserAvatar
+                    name={user?.displayName}
+                    email={user?.email}
+                    imageUrl={auth0User?.picture}
+                    size={28}
+                  />
                   <div className="text-left hidden sm:block">
                     <p className="text-sm font-semibold text-foreground leading-tight">{user?.displayName ?? 'User'}</p>
                     <p className="text-[11px] text-muted-foreground leading-tight">{user?.systemRole ?? 'Admin'}</p>
@@ -328,8 +368,8 @@ export function AppLayout() {
                   </div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem><User className="mr-2 h-4 w-4" /> Profile</DropdownMenuItem>
-                <DropdownMenuItem><Settings className="mr-2 h-4 w-4" /> Settings</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => navigate('/profile')}><User className="mr-2 h-4 w-4" /> Profile</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => navigate('/settings')}><Settings className="mr-2 h-4 w-4" /> Settings</DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={handleLogout} className="text-destructive focus:text-destructive">
                   <LogOut className="mr-2 h-4 w-4" /> Sign out
@@ -344,6 +384,14 @@ export function AppLayout() {
           <Outlet />
         </main>
       </div>
+
+      <CommandSearch
+        open={searchOpen}
+        onOpenChange={setSearchOpen}
+        activeProjectId={activeProjectId || undefined}
+        projects={projects}
+      />
+      <OnboardingGate />
     </div>
   );
 }

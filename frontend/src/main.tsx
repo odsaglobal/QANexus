@@ -6,7 +6,7 @@ import { Auth0Provider, type AppState } from '@auth0/auth0-react';
 import { App } from './App';
 import { ConfirmProvider } from './components/ui/confirm-dialog';
 import { Auth0SessionBridge } from './components/Auth0SessionBridge';
-import { auth0Audience, auth0ClientId, auth0Domain, auth0RedirectUri } from './lib/auth0';
+import { auth0Audience, auth0ClientId, auth0Domain, auth0Organization, auth0RedirectUri } from './lib/auth0';
 import './index.css';
 
 const queryClient = new QueryClient({
@@ -36,6 +36,7 @@ function Root() {
         redirect_uri: auth0RedirectUri,
         audience: auth0Audience,
         scope: 'openid profile email',
+        ...(auth0Organization ? { organization: auth0Organization } : {}),
       }}
       onRedirectCallback={onRedirectCallback}
       cacheLocation="localstorage"

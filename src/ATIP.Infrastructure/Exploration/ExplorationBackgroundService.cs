@@ -20,17 +20,23 @@ public sealed class ExplorationBackgroundService : BackgroundService
     private readonly ExplorationQueue _queue;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly int _maxParallel;
+    private readonly TimeSpan _maxSessionDuration;
+    private readonly IExplorationCancellationRegistry _cancellationRegistry;
     private readonly ILogger<ExplorationBackgroundService> _logger;
 
     public ExplorationBackgroundService(
         ExplorationQueue queue,
         IServiceScopeFactory scopeFactory,
         int maxParallelSessions,
+        int maxSessionMinutes,
+        IExplorationCancellationRegistry cancellationRegistry,
         ILogger<ExplorationBackgroundService> logger)
     {
         _queue = queue;
         _scopeFactory = scopeFactory;
         _maxParallel = Math.Max(1, maxParallelSessions);
+        _maxSessionDuration = TimeSpan.FromMinutes(Math.Max(1, maxSessionMinutes));
+        _cancellationRegistry = cancellationRegistry;
         _logger = logger;
     }
 
@@ -138,6 +144,12 @@ public sealed class ExplorationBackgroundService : BackgroundService
         var agent = scope.ServiceProvider.GetRequiredService<IExplorerAgent>();
         var notifications = scope.ServiceProvider.GetRequiredService<INotificationService>();
 
+        // Linked so a user Cancel request (via the registry) or a watchdog timeout stops this session's
+        // agent loop, without affecting any other in-flight session or the host's own shutdown token.
+        using var sessionCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        sessionCts.CancelAfter(_maxSessionDuration);
+        _cancellationRegistry.Register(sessionId, sessionCts);
+
         try
         {
             var session = await db.ExplorationSessions
@@ -157,7 +169,27 @@ public sealed class ExplorationBackgroundService : BackgroundService
             }
 
             _logger.LogInformation("Starting exploration session {SessionId}.", sessionId);
-            await agent.RunAsync(session, stoppingToken);
+
+            // The watchdog budget is per SCENARIO, but a suite runs every one of its scenarios inside a
+            // single session — so a flat cap silently guillotines long suites part-way through. Scale it
+            // with the amount of work the session actually has to do.
+            if (session.SuiteId is { } runningSuiteId)
+            {
+                var scenarioCount = await db.TestSuiteScenarios
+                    .IgnoreQueryFilters()
+                    .CountAsync(x => x.SuiteId == runningSuiteId, stoppingToken);
+
+                if (scenarioCount > 1)
+                {
+                    var budget = _maxSessionDuration * scenarioCount;
+                    sessionCts.CancelAfter(budget);
+                    _logger.LogInformation(
+                        "Session {SessionId} runs a suite of {Count} scenario(s); watchdog extended to {Minutes} minute(s).",
+                        sessionId, scenarioCount, (int)budget.TotalMinutes);
+                }
+            }
+
+            await agent.RunAsync(session, sessionCts.Token);
             _logger.LogInformation("Exploration session {SessionId} finished with status {Status}.", sessionId, session.Status);
 
             await NotifyRunFinishedAsync(db, notifications, session, stoppingToken);
@@ -165,6 +197,10 @@ public sealed class ExplorationBackgroundService : BackgroundService
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "Unexpected error processing session {SessionId}.", sessionId);
+        }
+        finally
+        {
+            _cancellationRegistry.Unregister(sessionId);
         }
     }
 

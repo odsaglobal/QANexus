@@ -36,6 +36,22 @@ public sealed class UpdateScenarioCommandValidator : AbstractValidator<UpdateSce
             {
                 step.RuleFor(s => s.Action).NotEmpty().MaximumLength(1000);
                 step.RuleFor(s => s.ExpectedResult).MaximumLength(1000);
+
+                step.RuleFor(s => s.Platform)
+                    .NotEmpty()
+                    .Must(v => Enum.TryParse<TestPlatform>(v, ignoreCase: true, out _))
+                    .WithMessage("Invalid platform. Use Web, Api, Mobile or Database.");
+
+                step.RuleFor(s => s.Kind).MaximumLength(60);
+                step.RuleFor(s => s.Target).MaximumLength(2000);
+                step.RuleFor(s => s.Value).MaximumLength(8000);
+
+                // A non-web step cannot be discovered by exploring a page, so it has to say what
+                // it does. Accepting one without a verb would create a step that can never run.
+                step.RuleFor(s => s.Kind)
+                    .NotEmpty()
+                    .When(s => !string.Equals(s.Platform, nameof(TestPlatform.Web), StringComparison.OrdinalIgnoreCase))
+                    .WithMessage("Steps that are not Web steps must specify an action kind, e.g. 'request' or 'query'.");
             });
     }
 }

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQueries } from '@tanstack/react-query';
 import {
   FileText, Layers, FlaskConical, Server, Compass, Sparkles,
-  ArrowRight, CheckCircle2, Circle, AlertTriangle, Clock, ExternalLink,
+  ArrowRight, CheckCircle2, Circle, AlertTriangle, ExternalLink,
 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts';
 import { listRequirements } from '../../api/requirements';
@@ -14,16 +14,12 @@ import { getErrorMessage } from '../../lib/apiClient';
 import { tabToPathSegment, type ProjectTab } from '../../lib/projectTabs';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/card';
 import { Badge } from '../../components/ui/badge';
-import { Button } from '../../components/ui/button';
 import { Alert } from '../../components/ui/alert';
+import { ProjectMembersCard } from './ProjectMembersCard';
 
 const scenarioTypeColor: Record<string, string> = {
   Positive: '#22c55e', Negative: '#ef4444', Boundary: '#f59e0b', Smoke: '#a78bfa',
   Security: '#ec4899', Regression: '#14b8a6', Accessibility: '#8b5cf6', Api: '#0ea5e9',
-};
-
-const explorationStatusVariant: Record<string, 'info' | 'warning' | 'success' | 'destructive' | 'secondary'> = {
-  Pending: 'info', Running: 'warning', Completed: 'success', Failed: 'destructive', Cancelled: 'secondary',
 };
 
 // Hidden internal buckets that back scenarios — not real business-context documents.
@@ -82,13 +78,6 @@ export function OverviewTab({ projectId }: { projectId: string }) {
       .map(([name, value]) => ({ name, value, color: scenarioTypeColor[name] ?? '#94a3b8' }))
       .sort((a, b) => b.value - a.value),
     [stats.byType],
-  );
-
-  const recentSessions = useMemo(
-    () => [...sessions]
-      .sort((a, b) => new Date(b.createdAtUtc).getTime() - new Date(a.createdAtUtc).getTime())
-      .slice(0, 5),
-    [sessions],
   );
 
   const checklist = [
@@ -224,51 +213,6 @@ export function OverviewTab({ projectId }: { projectId: string }) {
         </Card>
       </div>
 
-      {/* Recent explorations */}
-      <Card>
-        <CardHeader className="pb-3">
-          <div className="flex items-start justify-between">
-            <div>
-              <CardTitle>Recent explorations</CardTitle>
-              <CardDescription>
-                {stats.activeExplorations > 0
-                  ? `${stats.activeExplorations} running now`
-                  : 'AI-guided crawls of your application.'}
-              </CardDescription>
-            </div>
-            <Button variant="outline" size="sm" onClick={() => goTo('explorer')}>
-              <Compass className="h-4 w-4 mr-1.5" /> Open explorer
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {recentSessions.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-2 py-8 text-center">
-              <Compass className="h-8 w-8 text-muted-foreground/50" />
-              <p className="text-sm text-muted-foreground">No explorations yet.</p>
-              <Button variant="ghost" size="sm" className="text-violet-600" onClick={() => goTo('explorer')}>
-                Start your first exploration <ArrowRight className="h-3.5 w-3.5 ml-1" />
-              </Button>
-            </div>
-          ) : (
-            <ul className="divide-y divide-border">
-              {recentSessions.map((session) => (
-                <li key={session.id} className="flex items-center gap-3 py-2.5">
-                  <Badge variant={explorationStatusVariant[session.status] ?? 'secondary'}>{session.status}</Badge>
-                  <span className="flex-1 text-sm text-foreground truncate">
-                    {session.pagesDiscovered} pages · {session.elementsDiscovered} elements
-                  </span>
-                  <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                    <Clock className="h-3 w-3" />
-                    {new Date(session.createdAtUtc).toLocaleString()}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </CardContent>
-      </Card>
-
       {/* Quick actions */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <QuickAction
@@ -293,6 +237,8 @@ export function OverviewTab({ projectId }: { projectId: string }) {
           </span>
         </Alert>
       )}
+
+      <ProjectMembersCard projectId={projectId} />
     </div>
   );
 }

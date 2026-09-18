@@ -49,54 +49,6 @@ public sealed class DiscoveredPageConfiguration : IEntityTypeConfiguration<Disco
 
         builder.HasIndex(p => p.SessionId);
         builder.HasIndex(p => p.ProjectId);
-
-        builder.HasMany(p => p.Elements)
-            .WithOne(e => e.Page)
-            .HasForeignKey(e => e.PageId)
-            .OnDelete(DeleteBehavior.Cascade);
-    }
-}
-
-public sealed class DiscoveredElementConfiguration : IEntityTypeConfiguration<DiscoveredElement>
-{
-    public void Configure(EntityTypeBuilder<DiscoveredElement> builder)
-    {
-        builder.ToTable("discovered_elements");
-        builder.HasKey(e => e.Id);
-
-        builder.Property(e => e.Name).HasMaxLength(300);
-        builder.Property(e => e.Role).HasMaxLength(80);
-        builder.Property(e => e.AriaLabel).HasMaxLength(300);
-        builder.Property(e => e.TextContent).HasMaxLength(500);
-        builder.Property(e => e.Placeholder).HasMaxLength(200);
-        builder.Property(e => e.DataTestId).HasMaxLength(200);
-        builder.Property(e => e.DomPath).HasMaxLength(1000);
-        builder.Property(e => e.ScreenshotPath).HasMaxLength(1024);
-        builder.Property(e => e.AiDescription).HasMaxLength(500);
-        builder.Property(e => e.NearbyLabelsJson).HasColumnType("jsonb");
-        builder.Property(e => e.BoundingBoxJson).HasColumnType("jsonb");
-
-        builder.HasIndex(e => e.PageId);
-        builder.HasIndex(e => e.ProjectId);
-
-        builder.HasMany(e => e.Locators)
-            .WithOne(l => l.Element)
-            .HasForeignKey(l => l.ElementId)
-            .OnDelete(DeleteBehavior.Cascade);
-    }
-}
-
-public sealed class ElementLocatorConfiguration : IEntityTypeConfiguration<ElementLocator>
-{
-    public void Configure(EntityTypeBuilder<ElementLocator> builder)
-    {
-        builder.ToTable("element_locators");
-        builder.HasKey(l => l.Id);
-
-        builder.Property(l => l.Strategy).HasConversion<string>().HasMaxLength(40);
-        builder.Property(l => l.Value).HasMaxLength(2000).IsRequired();
-
-        builder.HasIndex(l => l.ElementId);
     }
 }
 
@@ -110,7 +62,9 @@ public sealed class ScenarioStepResultConfiguration : IEntityTypeConfiguration<S
         builder.Property(r => r.Status).HasConversion<string>().HasMaxLength(40);
         builder.Property(r => r.Action).HasMaxLength(1000).IsRequired();
         builder.Property(r => r.Detail).HasMaxLength(2000);
+        builder.Property(r => r.ChecksJson).HasColumnType("jsonb");
         builder.Property(r => r.Url).HasMaxLength(2000);
+        builder.Property(r => r.ScreenshotPath).HasMaxLength(500);
 
         builder.HasIndex(r => r.SessionId);
         builder.HasIndex(r => r.ScenarioId);

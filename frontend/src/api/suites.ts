@@ -49,14 +49,30 @@ export async function deleteTestSuite(projectId: string, id: string): Promise<vo
   await apiClient.delete(`/projects/${projectId}/suites/${id}`);
 }
 
+/** Narrows a suite run. Each facet matches ANY of its values; the facets combine with AND. */
+export interface SuiteRunFilter {
+  tags?: string[];
+  types?: string[];
+  priorities?: string[];
+  /** Explicitly checked scenarios, AND-ed with the facets. Omit to run every match. */
+  scenarioIds?: string[];
+}
+
 export async function runTestSuite(
   projectId: string,
   suiteId: string,
   environmentId?: string,
+  filter?: SuiteRunFilter,
 ): Promise<ExplorationSession> {
   const { data } = await apiClient.post<ExplorationSession>(
     `/projects/${projectId}/suites/${suiteId}/run`,
-    { environmentId },
+    {
+      environmentId,
+      tags: filter?.tags?.length ? filter.tags : undefined,
+      types: filter?.types?.length ? filter.types : undefined,
+      priorities: filter?.priorities?.length ? filter.priorities : undefined,
+      scenarioIds: filter?.scenarioIds?.length ? filter.scenarioIds : undefined,
+    },
   );
   return data;
 }

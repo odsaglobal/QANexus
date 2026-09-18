@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus, Trash2, Link2, ExternalLink } from 'lucide-react';
+import { Loader2, Plus, Trash2, Link2, ExternalLink, Layers } from 'lucide-react';
 import { createManualScenario, getJiraIssue, type ManualScenarioStepInput } from '../../api/scenarios';
-import type { JiraIssue } from '../../api/types';
+import { createTestSuite, updateTestSuite } from '../../api/suites';
+import type { JiraIssue, TestSuite } from '../../api/types';
 import { getErrorMessage } from '../../lib/apiClient';
 import { Alert } from '../../components/ui/alert';
 import { Badge } from '../../components/ui/badge';
@@ -19,18 +20,26 @@ const RISKS = ['Low', 'Medium', 'High'];
 
 interface EditableStep { key: string; action: string; expectedResult: string; }
 
+const NEW_SUITE = '__new_suite__';
+
 interface ManualScenarioDialogProps {
   projectId: string;
   featureId: string;
   featureLabel: string;
+  suites: TestSuite[];
   open: boolean;
   onClose: () => void;
-  onCreated: () => void;
+  onCreated: (suiteId: string) => void;
 }
 
-export function ManualScenarioDialog({ projectId, featureId, featureLabel, open, onClose, onCreated }: ManualScenarioDialogProps) {
+export function ManualScenarioDialog({ projectId, featureId, featureLabel, suites, open, onClose, onCreated }: ManualScenarioDialogProps) {
   const queryClient = useQueryClient();
   const [title, setTitle] = useState('');
+  // Every scenario must live in a suite so it is visible in the list. Default to the first existing
+  // suite, or force creating one when none exist yet.
+  const [suiteMode, setSuiteMode] = useState<'existing' | 'new'>(suites.length > 0 ? 'existing' : 'new');
+  const [selectedSuiteId, setSelectedSuiteId] = useState<string>(suites[0]?.id ?? '');
+  const [newSuiteName, setNewSuiteName] = useState('');
   const [type, setType] = useState('Positive');
   const [priority, setPriority] = useState('Medium');
   const [risk, setRisk] = useState('Medium');
@@ -47,26 +56,54 @@ export function ManualScenarioDialog({ projectId, featureId, featureLabel, open,
   const removeStep = (key: string) => setSteps((prev) => (prev.length === 1 ? prev : prev.filter((s) => s.key !== key)));
 
   const createMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async (): Promise<string> => {
       const payloadSteps = steps
         .filter((s) => s.action.trim())
         .map<ManualScenarioStepInput>((s) => ({ action: s.action.trim(), expectedResult: s.expectedResult.trim() || undefined }));
       if (payloadSteps.length === 0) {
         throw new Error('Add at least one step with an action.');
       }
-      return createManualScenario({
+
+      // Resolve the target suite up front so we fail fast before creating an orphan scenario.
+      const targetSuite = suites.find((s) => s.id === selectedSuiteId) ?? null;
+      if (suiteMode === 'new') {
+        if (!newSuiteName.trim()) throw new Error('Enter a name for the new suite.');
+      } else if (!targetSuite) {
+        throw new Error('Select a suite for this scenario, or create a new one.');
+      }
+
+      const created = await createManualScenario({
         projectId, featureId, title: title.trim(), type, priority, risk,
         preconditions: preconditions.trim() || undefined,
         expectedResult: expectedResult.trim() || undefined,
         jiraKey: jiraKey.trim() || undefined,
         steps: payloadSteps,
       });
+
+      // Attach the new scenario to its suite so it shows up in the list immediately.
+      if (suiteMode === 'new') {
+        const suite = await createTestSuite({
+          projectId, name: newSuiteName.trim(), scenarioIds: [created.id],
+        });
+        return suite.id;
+      }
+
+      const existingIds = targetSuite!.scenarios.map((ts) => ts.scenarioId);
+      await updateTestSuite({
+        id: targetSuite!.id,
+        projectId,
+        name: targetSuite!.name,
+        description: targetSuite!.description ?? undefined,
+        scenarioIds: [...existingIds, created.id],
+      });
+      return targetSuite!.id;
     },
-    onSuccess: () => {
+    onSuccess: (suiteId) => {
       setError(null);
       queryClient.invalidateQueries({ queryKey: ['scenarios', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['test-suites', projectId] });
       queryClient.invalidateQueries({ queryKey: ['knowledge-graph', projectId] });
-      onCreated();
+      onCreated(suiteId);
       onClose();
     },
     onError: (e) => setError(getErrorMessage(e)),
@@ -99,8 +136,42 @@ export function ManualScenarioDialog({ projectId, featureId, featureLabel, open,
           </p>
 
           <div className="space-y-1.5">
+            <Label className="flex items-center gap-1.5"><Layers className="h-3.5 w-3.5" /> Suite</Label>
+            <Select
+              value={suiteMode === 'new' ? NEW_SUITE : selectedSuiteId}
+              onValueChange={(v) => {
+                setError(null);
+                if (v === NEW_SUITE) {
+                  setSuiteMode('new');
+                } else {
+                  setSuiteMode('existing');
+                  setSelectedSuiteId(v);
+                }
+              }}
+            >
+              <SelectTrigger><SelectValue placeholder="Select a suite" /></SelectTrigger>
+              <SelectContent>
+                {suites.map((s) => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
+                <SelectItem value={NEW_SUITE}>+ Create new suite…</SelectItem>
+              </SelectContent>
+            </Select>
+            {suiteMode === 'new' && (
+              <Input
+                value={newSuiteName}
+                onChange={(e) => { setError(null); setNewSuiteName(e.target.value); }}
+                placeholder="New suite name, e.g. Smoke suite"
+                autoFocus={suites.length === 0}
+              />
+            )}
+            <p className="text-xs text-muted-foreground">
+              Every scenario belongs to a suite so it appears in the list.
+              {suites.length === 0 && ' Create your first suite to hold this scenario.'}
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
             <Label>Title</Label>
-            <Input value={title} onChange={(e) => { setError(null); setTitle(e.target.value); }} placeholder="e.g. Login with valid credentials" autoFocus />
+            <Input value={title} onChange={(e) => { setError(null); setTitle(e.target.value); }} placeholder="e.g. Login with valid credentials" autoFocus={suites.length > 0} />
           </div>
 
           <div className="space-y-1.5">
@@ -194,7 +265,10 @@ export function ManualScenarioDialog({ projectId, featureId, featureLabel, open,
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={createMutation.isPending}>Cancel</Button>
-          <Button onClick={() => createMutation.mutate()} disabled={!title.trim() || createMutation.isPending}>
+          <Button
+            onClick={() => createMutation.mutate()}
+            disabled={!title.trim() || createMutation.isPending || (suiteMode === 'new' ? !newSuiteName.trim() : !selectedSuiteId)}
+          >
             {createMutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
             Create scenario
           </Button>

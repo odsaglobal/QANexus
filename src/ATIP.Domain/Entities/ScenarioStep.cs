@@ -1,4 +1,5 @@
 using ATIP.Domain.Common;
+using ATIP.Domain.Enums;
 
 namespace ATIP.Domain.Entities;
 
@@ -19,6 +20,12 @@ public class ScenarioStep : AuditableEntity, ITenantScoped
 
     /// <summary>The expected outcome after the action, if any.</summary>
     public string? ExpectedResult { get; set; }
+
+    /// <summary>
+    /// Which system this step drives. Carried per step so one scenario can click through the UI,
+    /// assert the REST response and then check the database row without being split into three.
+    /// </summary>
+    public TestPlatform Platform { get; set; } = TestPlatform.Web;
 
     /// <summary>
     /// JSON array of the concrete browser actions that last satisfied this step (kind, target,

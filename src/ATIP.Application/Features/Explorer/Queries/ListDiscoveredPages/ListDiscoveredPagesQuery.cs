@@ -19,7 +19,6 @@ public sealed class ListDiscoveredPagesQueryHandler
     {
         var pages = await _db.DiscoveredPages
             .AsNoTracking()
-            .Include(p => p.Elements)
             .Where(p => p.SessionId == request.SessionId)
             .OrderBy(p => p.DepthFromRoot)
             .ThenBy(p => p.Url)

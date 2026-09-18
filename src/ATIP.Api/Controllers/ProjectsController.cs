@@ -1,9 +1,13 @@
 using ATIP.Application.Common.Models;
+using ATIP.Application.Features.Projects.Commands.AddProjectMember;
 using ATIP.Application.Features.Projects.Commands.CreateProject;
 using ATIP.Application.Features.Projects.Commands.DeleteProject;
+using ATIP.Application.Features.Projects.Commands.RemoveProjectMember;
 using ATIP.Application.Features.Projects.Commands.UpdateProject;
+using ATIP.Application.Features.Projects.Commands.UpdateProjectMemberRole;
 using ATIP.Application.Features.Projects.Dtos;
 using ATIP.Application.Features.Projects.Queries.GetProject;
+using ATIP.Application.Features.Projects.Queries.ListProjectMembers;
 using ATIP.Application.Features.Projects.Queries.ListProjects;
 using Microsoft.AspNetCore.Mvc;
 
@@ -72,4 +76,59 @@ public sealed class ProjectsController : ApiControllerBase
         await Mediator.Send(new DeleteProjectCommand(id), cancellationToken);
         return NoContent();
     }
+
+    /// <summary>Lists the members of a project and their project roles.</summary>
+    [HttpGet("{id:guid}/members")]
+    [ProducesResponseType(typeof(IReadOnlyList<ProjectMemberDto>), StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<ProjectMemberDto>>> ListMembers(
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        var result = await Mediator.Send(new ListProjectMembersQuery(id), cancellationToken);
+        return Ok(result);
+    }
+
+    /// <summary>Adds a workspace user to the project with a role (or updates their role). Owner only.</summary>
+    [HttpPost("{id:guid}/members")]
+    [ProducesResponseType(typeof(ProjectMemberDto), StatusCodes.Status200OK)]
+    public async Task<ActionResult<ProjectMemberDto>> AddMember(
+        Guid id,
+        [FromBody] AddMemberBody body,
+        CancellationToken cancellationToken)
+    {
+        var result = await Mediator.Send(
+            new AddProjectMemberCommand { ProjectId = id, UserId = body.UserId, Role = body.Role },
+            cancellationToken);
+        return Ok(result);
+    }
+
+    /// <summary>Changes an existing project member's role. Owner only.</summary>
+    [HttpPut("{id:guid}/members/{userId:guid}")]
+    [ProducesResponseType(typeof(ProjectMemberDto), StatusCodes.Status200OK)]
+    public async Task<ActionResult<ProjectMemberDto>> UpdateMemberRole(
+        Guid id,
+        Guid userId,
+        [FromBody] MemberRoleBody body,
+        CancellationToken cancellationToken)
+    {
+        var result = await Mediator.Send(
+            new UpdateProjectMemberRoleCommand { ProjectId = id, UserId = userId, Role = body.Role },
+            cancellationToken);
+        return Ok(result);
+    }
+
+    /// <summary>Removes a member from the project. Owner only.</summary>
+    [HttpDelete("{id:guid}/members/{userId:guid}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    public async Task<IActionResult> RemoveMember(
+        Guid id,
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        await Mediator.Send(new RemoveProjectMemberCommand { ProjectId = id, UserId = userId }, cancellationToken);
+        return NoContent();
+    }
+
+    public sealed record AddMemberBody(Guid UserId, string Role);
+    public sealed record MemberRoleBody(string Role);
 }

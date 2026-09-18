@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Trash2, ArrowUp, ArrowDown, Loader2, AlertTriangle, Link2, ExternalLink } from 'lucide-react';
+import { Plus, Trash2, ArrowUp, ArrowDown, Loader2, AlertTriangle, Link2, ExternalLink, ShieldCheck } from 'lucide-react';
 import type { JiraIssue, Scenario } from '../../api/types';
 import { deleteScenario, updateScenario, applyProposedSteps, discardProposedSteps, revertSteps, getJiraIssue, type UpdateScenarioStepInput } from '../../api/scenarios';
 import { getErrorMessage } from '../../lib/apiClient';
@@ -13,6 +13,7 @@ import { Input } from '../../components/ui/input';
 import { Textarea } from '../../components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
 import { Separator } from '../../components/ui/separator';
+import { Switch } from '../../components/ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../components/ui/dialog';
 import { useConfirm } from '../../components/ui/confirm-dialog';
 
@@ -36,6 +37,7 @@ export function ScenarioEditorDialog({ scenario, projectId, open, onClose }: {
   const [expectedResult, setExpectedResult] = useState(scenario.expectedResult ?? '');
   const [jiraKey, setJiraKey] = useState(scenario.jiraKey ?? '');
   const [jiraIssue, setJiraIssue] = useState<JiraIssue | null>(null);
+  const [autoHealEnabled, setAutoHealEnabled] = useState(scenario.autoHealEnabled ?? true);
   const [steps, setSteps] = useState<EditableStep[]>(() =>
     scenario.steps.map((s) => ({ key: crypto.randomUUID(), action: s.action, expectedResult: s.expectedResult ?? '', needsReview: s.needsReview, reviewReason: s.reviewReason })),
   );
@@ -47,6 +49,7 @@ export function ScenarioEditorDialog({ scenario, projectId, open, onClose }: {
     setExpectedResult(scenario.expectedResult ?? '');
     setJiraKey(scenario.jiraKey ?? '');
     setJiraIssue(null);
+    setAutoHealEnabled(scenario.autoHealEnabled ?? true);
     setSteps(scenario.steps.map((s) => ({ key: crypto.randomUUID(), action: s.action, expectedResult: s.expectedResult ?? '', needsReview: s.needsReview, reviewReason: s.reviewReason })));
     setError(null);
   }, [scenario]);
@@ -78,6 +81,7 @@ export function ScenarioEditorDialog({ scenario, projectId, open, onClose }: {
       expectedResult: expectedResult.trim() || undefined,
       jiraKey: jiraKey.trim() || undefined,
       tags: scenario.tags,
+      autoHealEnabled,
       steps: steps.filter((s) => s.action.trim()).map<UpdateScenarioStepInput>((s) => ({
         action: s.action.trim(), expectedResult: s.expectedResult.trim() || undefined,
       })),
@@ -144,11 +148,24 @@ export function ScenarioEditorDialog({ scenario, projectId, open, onClose }: {
                 Suggested steps from exploring the real app ({proposedSteps.length})
               </div>
               <p className="text-xs text-violet-700">
-                These are the actual actions the AI performed on the app. Applying them replaces the current steps (your originals are backed up and can be reverted).
+                These are only the browser actions the AI actually performed — assertion-only steps and the opening navigation produce no action, so this list is usually shorter than your authored steps. Applying it replaces the current steps (your originals are backed up and can be reverted).
               </p>
-              <ol className="text-xs text-foreground space-y-1 list-decimal pl-5">
+              <ol className="text-xs text-foreground space-y-1.5 list-decimal pl-5">
                 {proposedSteps.map((s, i) => (
-                  <li key={i}>{s.action}</li>
+                  <li key={i}>
+                    <div>{s.action}</div>
+                    {s.expectedResult
+                      ? (
+                        <div className="mt-1 flex items-start gap-1.5 rounded-md border border-sky-200 bg-sky-50 px-2 py-1 text-sky-900">
+                          <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-sky-600 mt-px" />
+                          <span>
+                            <span className="font-semibold uppercase tracking-wide text-[10px] text-sky-700 mr-1.5">Validate</span>
+                            {s.expectedResult}
+                          </span>
+                        </div>
+                      )
+                      : <div className="text-muted-foreground italic">No validation was captured for this action.</div>}
+                  </li>
                 ))}
               </ol>
               <div className="flex items-center gap-2 pt-1">
@@ -274,6 +291,20 @@ export function ScenarioEditorDialog({ scenario, projectId, open, onClose }: {
             <Label>Overall expected result</Label>
             <Textarea value={expectedResult} onChange={(e) => setExpectedResult(e.target.value)}
               placeholder="Summarise the overall outcome when all steps succeed." rows={2} />
+          </div>
+
+          <Separator />
+
+          <div className="flex items-start justify-between gap-4 rounded-md border p-3">
+            <div className="min-w-0 space-y-0.5">
+              <Label htmlFor="auto-heal-toggle">Auto-heal on failure</Label>
+              <p className="text-xs text-muted-foreground">
+                Runs execute this scenario's recorded steps deterministically with plain Playwright — no AI.
+                When a locator breaks, auto-heal spends one AI call to re-locate the element and repair the
+                recording. Turn it off to keep runs strictly deterministic and free.
+              </p>
+            </div>
+            <Switch id="auto-heal-toggle" checked={autoHealEnabled} onCheckedChange={setAutoHealEnabled} />
           </div>
         </div>
 

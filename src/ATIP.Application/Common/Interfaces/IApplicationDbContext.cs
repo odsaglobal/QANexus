@@ -44,9 +44,11 @@ public interface IApplicationDbContext
 
     DbSet<DiscoveredPage> DiscoveredPages { get; }
 
-    DbSet<DiscoveredElement> DiscoveredElements { get; }
+    DbSet<UiElement> UiElements { get; }
 
-    DbSet<ElementLocator> ElementLocators { get; }
+    DbSet<UiElementLocator> UiElementLocators { get; }
+
+    DbSet<DataConnection> DataConnections { get; }
 
     DbSet<TestSuite> TestSuites { get; }
 

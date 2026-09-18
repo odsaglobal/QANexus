@@ -79,6 +79,54 @@
 }
 ::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground) / 0.4); }
 
+/* ── Print: emit only the run report ──
+   The report lives inside a modal, so printing the page as-is would produce the dimmed
+   overlay and a clipped, scrolled dialog. Detach .print-area from the modal's fixed
+   positioning and hide everything else, so "Download PDF" yields the full report. */
+@media print {
+  body * { visibility: hidden; }
+
+  .print-area, .print-area * { visibility: visible; }
+
+  .print-area {
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    transform: none !important;
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+  }
+
+  /* On screen the body scrolls inside the dialog; on paper it has to flow across sheets. */
+  .print-area .report-body {
+    overflow: visible !important;
+    max-height: none !important;
+    padding: 0 !important;
+  }
+
+  /* Controls are meaningless on paper. `.print-area > button` is Radix's close X, which is a
+     direct child of the dialog — scoped with > so the evidence thumbnails (also buttons,
+     but nested) still print. */
+  .no-print, .print-area > button { display: none !important; }
+
+  /* Keep a step, its validations and its thumbnail on the same sheet. */
+  .break-inside-avoid { break-inside: avoid; page-break-inside: avoid; }
+
+  /* The thumbnail is a fixed-size crop; let it print at exactly the size it's shown. */
+  .report-thumb { border-color: #cbd5e1 !important; }
+
+  /* Force the status colours through; browsers drop backgrounds/colour by default. */
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+  @page { margin: 14mm; }
+}
+
 /* ── Animations ── */
 
 @keyframes pulse-glow {
@@ -119,11 +167,25 @@
   100% { transform: translateY(200%); opacity: 0; }
 }
 
+/* Boot splash progress. The bar is a third of its track, so it travels -100%..300% of its own
+   width to enter and leave cleanly at both ends. */
+@keyframes indeterminate {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+
 /* ── Utility classes ── */
 .animate-slide-up   { animation: slide-up 0.35s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
 .animate-fade-in    { animation: fade-in 0.25s ease forwards; }
 .animate-float      { animation: float 4s ease-in-out infinite; }
 .animate-pulse-glow { animation: pulse-glow 2s infinite; }
+.animate-indeterminate { animation: indeterminate 1.15s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
+
+/* A looping bar is exactly what "reduce motion" is asking us not to do; show a filled track
+   instead, so the element still reads as "busy" without the travel. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-indeterminate { animation: none; width: 100%; }
+}
 
 /* ── Gradient border utility ── */
 .gradient-border {

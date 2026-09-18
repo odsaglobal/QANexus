@@ -14,6 +14,13 @@ public sealed record UserDto
     public DateTimeOffset? LastLoginAtUtc { get; init; }
     public required DateTimeOffset CreatedAtUtc { get; init; }
 
+    /// <summary>The tenant (client workspace) the user belongs to. Name/Slug are populated only when
+    /// the Tenant navigation is loaded (e.g. the current-user endpoint); null in the members list.</summary>
+    public Guid TenantId { get; init; }
+    public string? TenantName { get; init; }
+    public string? TenantSlug { get; init; }
+    public bool TenantIsOnboarded { get; init; }
+
     public static UserDto FromEntity(User u) => new()
     {
         Id = u.Id,
@@ -24,5 +31,9 @@ public sealed record UserDto
         IsFederated = u.IsFederated,
         LastLoginAtUtc = u.LastLoginAtUtc,
         CreatedAtUtc = u.CreatedAtUtc,
+        TenantId = u.TenantId,
+        TenantName = u.Tenant?.Name,
+        TenantSlug = u.Tenant?.Slug,
+        TenantIsOnboarded = u.Tenant?.IsOnboarded ?? true,
     };
 }

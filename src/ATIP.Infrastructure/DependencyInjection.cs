@@ -1,4 +1,5 @@
 using ATIP.Application.Common.Interfaces;
+using ATIP.Application.Engine.Contracts;
 using ATIP.Infrastructure.Ai;
 using ATIP.Infrastructure.Common;
 using ATIP.Infrastructure.Configuration;
@@ -81,7 +82,14 @@ public static class DependencyInjection
             // so no BaseAddress is required here. We only configure auth and timeout.
             if (!string.IsNullOrWhiteSpace(llmOptions.ApiKey))
             {
-                if (isAzure)
+                if (llmOptions.IsAnthropic)
+                {
+                    // Anthropic authenticates with x-api-key (NOT a Bearer token) and rejects any request
+                    // that omits the API version header.
+                    client.DefaultRequestHeaders.Add("x-api-key", llmOptions.ApiKey);
+                    client.DefaultRequestHeaders.Add("anthropic-version", llmOptions.AnthropicVersion);
+                }
+                else if (isAzure)
                 {
                     client.DefaultRequestHeaders.Add("api-key", llmOptions.ApiKey);
                 }
@@ -143,15 +151,55 @@ public static class DependencyInjection
         services.AddSingleton(explorationQueue);
         services.AddSingleton<IExplorationQueue>(explorationQueue);
         services.AddScoped<IExplorerAgent, ExplorerAgent>();
+        services.AddSingleton<IExplorationCancellationRegistry, ExplorationCancellationRegistry>();
+
+        AddAutomationEngine(services, configuration);
 
         // Bounded concurrency so multiple users' explorations run independently in parallel.
         var maxParallelSessions = configuration.GetValue("Exploration:MaxParallelSessions", 4);
+        // Watchdog: a hung agent (dead MCP subprocess, stalled LLM, infinite loop) must not hold its
+        // concurrency slot — and the DB row — forever. Force it to Failed after this many minutes.
+        var maxSessionMinutes = configuration.GetValue("Exploration:MaxSessionMinutes", 20);
         services.AddHostedService(sp => new ExplorationBackgroundService(
             sp.GetRequiredService<ExplorationQueue>(),
             sp.GetRequiredService<IServiceScopeFactory>(),
             maxParallelSessions,
+            maxSessionMinutes,
+            sp.GetRequiredService<IExplorationCancellationRegistry>(),
             sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ExplorationBackgroundService>>()));
 
         return services;
+    }
+
+    /// <summary>
+    /// Registers the generic test engine: the object repository behind self-healing locators and
+    /// one driver factory per platform.
+    /// </summary>
+    /// <remarks>
+    /// Everything here is scoped to a run. The engine holds live drivers — a browser, an Appium
+    /// session, open connections — so a singleton would have two concurrent runs sharing one
+    /// browser page, and a transient would start a fresh browser for every single action.
+    /// </remarks>
+    private static void AddAutomationEngine(IServiceCollection services, IConfiguration configuration)
+    {
+        services.Configure<Engine.Mobile.MobileDriverOptions>(
+            configuration.GetSection(Engine.Mobile.MobileDriverOptions.SectionName));
+
+        services.AddScoped<ILocatorRepository, Engine.Locators.LocatorRepository>();
+        services.AddScoped<ILocatorResolver, Engine.Locators.LocatorResolver>();
+
+        services.AddScoped<Engine.Web.WebBrowserSession>();
+
+        services.AddScoped<ITestDriverFactory, Engine.WebDriverFactory>();
+        services.AddScoped<ITestDriverFactory, Engine.ApiDriverFactory>();
+        services.AddScoped<ITestDriverFactory, Engine.DatabaseDriverFactory>();
+        services.AddScoped<ITestDriverFactory, Engine.MobileDriverFactory>();
+
+        // Named clients so engine traffic gets its own handler pool and cannot inherit the
+        // auth headers or base address configured for the product's own integrations.
+        services.AddHttpClient("atip-test-api");
+        services.AddHttpClient("atip-appium");
+
+        services.AddScoped<ITestEngine, Engine.TestEngine>();
     }
 }

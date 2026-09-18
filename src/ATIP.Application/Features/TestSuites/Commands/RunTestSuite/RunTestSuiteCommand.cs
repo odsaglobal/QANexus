@@ -17,5 +17,22 @@ public sealed record RunTestSuiteCommand : IRequest<ExplorationSessionDto>, IPro
     /// <summary>Optional environment; when omitted the project's default (or first) environment is used.</summary>
     public Guid? EnvironmentId { get; init; }
 
+    /// <summary>
+    /// Optional filters narrowing which of the suite's scenarios run. Each facet matches ANY of its
+    /// values, and the facets are combined with AND — so "Negative" + "Critical" runs the critical
+    /// negative cases. Empty facets are ignored.
+    /// </summary>
+    public IReadOnlyList<string>? Tags { get; init; }
+
+    public IReadOnlyList<string>? Types { get; init; }
+
+    public IReadOnlyList<string>? Priorities { get; init; }
+
+    /// <summary>
+    /// Optional explicit list of the suite's scenarios to run, for when the user unchecks individual
+    /// test cases. Combined with the facets using AND. Omitted or empty means "every match".
+    /// </summary>
+    public IReadOnlyList<Guid>? ScenarioIds { get; init; }
+
     public ProjectRole RequiredRole => ProjectRole.Editor;
 }

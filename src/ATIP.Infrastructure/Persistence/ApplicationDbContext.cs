@@ -4,6 +4,7 @@ using ATIP.Domain.Common;
 using ATIP.Domain.Entities;
 using ATIP.Infrastructure.Persistence.Interceptors;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata;
 using EnvEntity = ATIP.Domain.Entities.Environment;
 
 namespace ATIP.Infrastructure.Persistence;
@@ -66,9 +67,11 @@ public sealed class ApplicationDbContext : DbContext, IApplicationDbContext
 
     public DbSet<DiscoveredPage> DiscoveredPages => Set<DiscoveredPage>();
 
-    public DbSet<DiscoveredElement> DiscoveredElements => Set<DiscoveredElement>();
+    public DbSet<UiElement> UiElements => Set<UiElement>();
 
-    public DbSet<ElementLocator> ElementLocators => Set<ElementLocator>();
+    public DbSet<UiElementLocator> UiElementLocators => Set<UiElementLocator>();
+
+    public DbSet<DataConnection> DataConnections => Set<DataConnection>();
 
     public DbSet<TestSuite> TestSuites => Set<TestSuite>();
 
@@ -89,8 +92,53 @@ public sealed class ApplicationDbContext : DbContext, IApplicationDbContext
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(ApplicationDbContext).Assembly);
+        ApplyOwnershipForeignKeys(modelBuilder);
         ApplyGlobalFilters(modelBuilder);
         base.OnModelCreating(modelBuilder);
+    }
+
+    /// <summary>
+    /// Backs every <c>TenantId</c>/<c>ProjectId</c> column with a real foreign key. Most entities
+    /// carry the id without a navigation property, so convention never created the constraint and
+    /// nothing at the database level stopped a row from outliving its owner. Entities that do
+    /// declare a navigation already have the relationship and are skipped.
+    /// </summary>
+    private static void ApplyOwnershipForeignKeys(ModelBuilder modelBuilder)
+    {
+        // Materialised because configuring a relationship mutates the model being iterated.
+        foreach (var entityType in modelBuilder.Model.GetEntityTypes().ToList())
+        {
+            AddOwnerForeignKey(modelBuilder, entityType, typeof(Tenant), nameof(ITenantScoped.TenantId));
+            AddOwnerForeignKey(modelBuilder, entityType, typeof(Project), "ProjectId");
+        }
+    }
+
+    private static void AddOwnerForeignKey(
+        ModelBuilder modelBuilder,
+        IMutableEntityType entityType,
+        Type ownerType,
+        string foreignKeyName)
+    {
+        if (entityType.ClrType == ownerType || entityType.FindProperty(foreignKeyName) is null)
+        {
+            return;
+        }
+
+        // A navigation property (or an explicit configuration) already produced the constraint.
+        // Adding a second one here would create a duplicate FK and a shadow "TenantId1" column.
+        if (entityType.GetForeignKeys().Any(fk => fk.PrincipalEntityType.ClrType == ownerType))
+        {
+            return;
+        }
+
+        // Restrict, not the Cascade that EF defaults to for a required relationship: tenants and
+        // projects are only ever soft-deleted, so a hard delete here would mean something has gone
+        // wrong, and cascading it would silently erase every row belonging to that owner.
+        modelBuilder.Entity(entityType.ClrType)
+            .HasOne(ownerType)
+            .WithMany()
+            .HasForeignKey(foreignKeyName)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 
     private void ApplyGlobalFilters(ModelBuilder modelBuilder)
@@ -111,6 +159,13 @@ public sealed class ApplicationDbContext : DbContext, IApplicationDbContext
 
             if (isTenantScoped)
             {
+                // Every read of this entity carries a TenantId predicate from the filter below, so
+                // the column needs an index or each one degrades into a sequential scan. Declared
+                // here rather than per-configuration so new tenant-scoped entities cannot forget it.
+                // EF identifies an index by its property set, so this is a no-op where a
+                // configuration already declares one.
+                modelBuilder.Entity(clrType).HasIndex(nameof(ITenantScoped.TenantId));
+
                 // e => !e.TenantId.HasValue-scenario handled by comparing to current tenant.
                 var tenantProperty = Expression.Property(parameter, nameof(ITenantScoped.TenantId));
                 var currentTenant = Expression.Property(

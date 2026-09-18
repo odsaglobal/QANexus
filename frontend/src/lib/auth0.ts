@@ -14,4 +14,12 @@ export const auth0ClientId =
 export const auth0Audience =
   (import.meta.env.VITE_AUTH0_AUDIENCE as string | undefined) ?? 'https://qanexus-api';
 
+/**
+ * Optional Auth0 Organization id (org_xx…) to scope logins to a specific client. When set, users
+ * authenticate into this organization and their token carries an `org_id` claim (the backend maps
+ * it to a tenant). Leave unset to use "Prompt for Organization" or plain email-domain grouping.
+ */
+export const auth0Organization =
+  (import.meta.env.VITE_AUTH0_ORGANIZATION as string | undefined) || undefined;
+
 export const auth0RedirectUri = `${window.location.origin}/login/callback`;

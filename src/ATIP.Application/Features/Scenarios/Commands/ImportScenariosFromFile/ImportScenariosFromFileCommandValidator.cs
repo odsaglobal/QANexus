@@ -7,7 +7,18 @@ public sealed class ImportScenariosFromFileCommandValidator : AbstractValidator<
     public ImportScenariosFromFileCommandValidator()
     {
         RuleFor(x => x.ProjectId).NotEmpty();
-        RuleFor(x => x.ProjectId).NotEmpty();
+
+        RuleFor(x => x.SuiteId)
+            .NotEmpty()
+            .When(x => x.SuiteMode == ImportSuiteMode.Existing)
+            .WithMessage("Choose the suite to add the imported test cases to.");
+
+        RuleFor(x => x.NewSuiteName)
+            .NotEmpty()
+            .MaximumLength(200)
+            .When(x => x.SuiteMode == ImportSuiteMode.New)
+            .WithMessage("Give the new suite a name.");
+
         RuleFor(x => x.FileName)
             .NotEmpty()
             .Must(name =>

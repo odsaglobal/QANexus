@@ -12,7 +12,8 @@ public sealed class LlmOptions
     public const string ResolverSectionName = "LlmResolver";
 
     /// <summary>
-    /// Provider name, e.g. "openai" or "azure". Azure endpoints with openai.azure.com are detected automatically.
+    /// Provider name, e.g. "openai", "azure" or "anthropic". Azure endpoints with openai.azure.com and
+    /// Anthropic endpoints with api.anthropic.com are detected automatically.
     /// </summary>
     public string Provider { get; set; } = "openai";
 
@@ -36,6 +37,12 @@ public sealed class LlmOptions
 
     public double Temperature { get; set; } = 0.4;
 
+    /// <summary>
+    /// Max attempts for a single completion when the endpoint returns a transient error (429, 502/503/504,
+    /// or a connection failure). 1 = no retry. Uses exponential backoff with jitter between attempts.
+    /// </summary>
+    public int MaxRetries { get; set; } = 3;
+
     public int MaxSelectors { get; set; } = 5;
 
     public bool EnableVision { get; set; }
@@ -43,25 +50,58 @@ public sealed class LlmOptions
     public bool EnableAriaTree { get; set; } = true;
 
     /// <summary>True when a real endpoint is configured.</summary>
-    public bool IsConfigured => (!string.IsNullOrWhiteSpace(Endpoint) || !string.IsNullOrWhiteSpace(BaseUrl))
-        && !string.IsNullOrWhiteSpace(ApiKey);
+    public bool IsConfigured => !string.IsNullOrWhiteSpace(ApiKey)
+        && (!string.IsNullOrWhiteSpace(Endpoint) || !string.IsNullOrWhiteSpace(BaseUrl) || IsAnthropic);
 
     /// <summary>True when the configured endpoint targets Azure OpenAI.</summary>
     public bool IsAzure => string.Equals(Provider, "azure", StringComparison.OrdinalIgnoreCase)
         || RawEndpoint.Contains("openai.azure.com", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// True when the configured endpoint targets Anthropic's native Messages API. Anthropic is NOT
+    /// OpenAI-compatible: it uses a different URL, auth header, request body and response shape.
+    /// </summary>
+    public bool IsAnthropic => string.Equals(Provider, "anthropic", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(Provider, "claude", StringComparison.OrdinalIgnoreCase)
+        || RawEndpoint.Contains("api.anthropic.com", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Version header required on every Anthropic Messages API call.
+    /// </summary>
+    public string AnthropicVersion { get; set; } = "2023-06-01";
+
+    /// <summary>
+    /// Upper bound on tokens the model may generate. Anthropic REQUIRES this on every request; the
+    /// exploration agent's JSON decisions are small, but scenario generation returns long documents.
+    /// </summary>
+    public int MaxTokens { get; set; } = 8192;
+
     private string RawEndpoint => !string.IsNullOrWhiteSpace(Endpoint) ? Endpoint.Trim() : BaseUrl.Trim();
 
     /// <summary>
     /// Absolute chat-completions URL to POST to. For Azure this preserves the deployment path and the
-    /// required <c>api-version</c> query string; for OpenAI-compatible servers it appends
-    /// <c>/v1/chat/completions</c> when only a host is supplied.
+    /// required <c>api-version</c> query string; for Anthropic it resolves to the Messages API; for
+    /// OpenAI-compatible servers it appends <c>/v1/chat/completions</c> when only a host is supplied.
     /// </summary>
     public string ChatCompletionsUrl
     {
         get
         {
             var endpoint = RawEndpoint;
+
+            if (IsAnthropic)
+            {
+                // Anthropic needs no per-deployment URL, so the endpoint is normally omitted. Ignore one that
+                // points elsewhere: switching provider by overriding only Provider would otherwise graft the
+                // Messages path onto a leftover Azure deployment URL and fail with a confusing 404.
+                var host = endpoint.Contains("anthropic.com", StringComparison.OrdinalIgnoreCase)
+                    ? endpoint.TrimEnd('/')
+                    : "https://api.anthropic.com";
+                return host.Contains("/messages", StringComparison.OrdinalIgnoreCase)
+                    ? host
+                    : host.EndsWith("/v1", StringComparison.OrdinalIgnoreCase) ? host + "/messages" : host + "/v1/messages";
+            }
+
             if (string.IsNullOrWhiteSpace(endpoint))
             {
                 return string.Empty;

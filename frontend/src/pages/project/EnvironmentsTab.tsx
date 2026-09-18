@@ -9,7 +9,8 @@ import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { Badge } from '../../components/ui/badge';
 import { Alert } from '../../components/ui/alert';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/card';
+import { Card, CardContent } from '../../components/ui/card';
+import { PageHeader } from '../../components/PageHeader';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
@@ -68,18 +69,16 @@ export function EnvironmentsTab({ projectId }: { projectId: string }) {
 
   return (
     <div className="space-y-4">
+      <PageHeader
+        title="Environments"
+        description="Deployment targets explorations and executions run against."
+        actions={(
+          <Button variant="outline" size="sm" onClick={openCreate}>
+            <Plus className="h-4 w-4 mr-1.5" /> Add environment
+          </Button>
+        )}
+      />
       <Card>
-        <CardHeader className="pb-3">
-          <div className="flex items-start justify-between">
-            <div>
-              <CardTitle>Environments</CardTitle>
-              <CardDescription>Deployment targets explorations and executions run against.</CardDescription>
-            </div>
-            <Button variant="outline" size="sm" onClick={openCreate}>
-              <Plus className="h-4 w-4 mr-1.5" /> Add environment
-            </Button>
-          </div>
-        </CardHeader>
         <CardContent className="p-0">
           <Table>
             <TableHeader>

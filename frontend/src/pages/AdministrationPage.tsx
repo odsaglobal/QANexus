@@ -10,9 +10,11 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { useConfirm } from '../components/ui/confirm-dialog';
+import { UserAvatar } from '../components/UserAvatar';
 import { getErrorMessage } from '../lib/apiClient';
-import { listUsers } from '../api/users';
+import { listUsers, getMyProfile, changeUserSystemRole } from '../api/users';
 import { listAuditLogs } from '../api/audit';
 import { listApiKeys, createApiKey, revokeApiKey, type CreatedApiKey } from '../api/apiKeys';
 
@@ -20,16 +22,6 @@ function roleLabel(role: string): string {
   if (role === 'TenantAdmin') return 'Tenant Admin';
   if (role === 'PlatformAdmin') return 'Platform Admin';
   return role;
-}
-
-function initials(name: string): string {
-  return name
-    .split(' ')
-    .map((p) => p[0])
-    .filter(Boolean)
-    .slice(0, 2)
-    .join('')
-    .toUpperCase();
 }
 
 export function AdministrationPage() {
@@ -80,9 +72,19 @@ export function AdministrationPage() {
 }
 
 function MembersCard() {
+  const queryClient = useQueryClient();
   const { data: users = [], isLoading, isError, error } = useQuery({
     queryKey: ['users'],
     queryFn: listUsers,
+  });
+  const { data: me } = useQuery({ queryKey: ['me'], queryFn: getMyProfile });
+  const isAdmin = me?.role === 'TenantAdmin' || me?.role === 'PlatformAdmin';
+
+  const roleMutation = useMutation({
+    mutationFn: ({ userId, role }: { userId: string; role: string }) => changeUserSystemRole(userId, role),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['users'] });
+    },
   });
 
   return (
@@ -92,6 +94,7 @@ function MembersCard() {
         </CardHeader>
         <CardContent className="pt-0">
           {isError && <Alert severity="error" className="text-sm mb-3">{(error as Error)?.message ?? 'Failed to load users.'}</Alert>}
+          {roleMutation.isError && <Alert severity="error" className="text-sm mb-3">{getErrorMessage(roleMutation.error)}</Alert>}
           <Table>
             <TableHeader>
               <TableRow>
@@ -118,25 +121,45 @@ function MembersCard() {
                   </TableCell>
                 </TableRow>
               )}
-              {users.map((u) => (
-                <TableRow key={u.id}>
-                  <TableCell>
-                    <div className="flex items-center gap-2.5">
-                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-100 text-xs font-semibold text-violet-700">
-                        {initials(u.displayName)}
-                      </span>
-                      <span className="font-medium">{u.displayName}</span>
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">{u.email}</TableCell>
-                  <TableCell><Badge variant="outline">{roleLabel(u.role)}</Badge></TableCell>
-                  <TableCell><Badge variant="secondary">{u.isFederated ? 'SSO' : 'Local'}</Badge></TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {u.lastLoginAtUtc ? new Date(u.lastLoginAtUtc).toLocaleString() : '—'}
-                  </TableCell>
-                  <TableCell><Badge variant={u.isActive ? 'success' : 'warning'}>{u.isActive ? 'Active' : 'Disabled'}</Badge></TableCell>
-                </TableRow>
-              ))}
+              {users.map((u) => {
+                // Platform admins aren't editable here; only Member ↔ TenantAdmin.
+                const editable = isAdmin && u.role !== 'PlatformAdmin';
+                return (
+                  <TableRow key={u.id}>
+                    <TableCell>
+                      <div className="flex items-center gap-2.5">
+                        <UserAvatar name={u.displayName} email={u.email} size={32} />
+                        <span className="font-medium">{u.displayName}</span>
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">{u.email}</TableCell>
+                    <TableCell>
+                      {editable ? (
+                        <Select
+                          value={u.role}
+                          onValueChange={(role) => roleMutation.mutate({ userId: u.id, role })}
+                          disabled={roleMutation.isPending}
+                        >
+                          <SelectTrigger className="h-8 w-[150px]">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="Member">Member</SelectItem>
+                            <SelectItem value="TenantAdmin">Tenant Admin</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <Badge variant="outline">{roleLabel(u.role)}</Badge>
+                      )}
+                    </TableCell>
+                    <TableCell><Badge variant="secondary">{u.isFederated ? 'SSO' : 'Local'}</Badge></TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {u.lastLoginAtUtc ? new Date(u.lastLoginAtUtc).toLocaleString() : '—'}
+                    </TableCell>
+                    <TableCell><Badge variant={u.isActive ? 'success' : 'warning'}>{u.isActive ? 'Active' : 'Disabled'}</Badge></TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         </CardContent>

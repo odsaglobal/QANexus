@@ -11,17 +11,24 @@ public sealed class StepAgentDecision
     /// <summary>Short reasoning for this action (surfaced in logs and the step detail).</summary>
     public string? Thought { get; set; }
 
-    /// <summary>navigate | click | type | press | wait | finish</summary>
+    /// <summary>navigate | click | type | select | press | wait | finish</summary>
     public string? Action { get; set; }
 
-    /// <summary>The [ref=eN] id of the target element from the snapshot (for click/type).</summary>
+    /// <summary>The [ref=eN] id of the target element from the snapshot (for click/type/select).</summary>
     public string? Ref { get; set; }
 
-    /// <summary>URL/path (navigate), key name (press, e.g. "Enter"), or element-name fallback (click/type).</summary>
+    /// <summary>URL/path (navigate), key name (press, e.g. "Enter"), or element-name fallback (click/type/select).</summary>
     public string? Target { get; set; }
 
-    /// <summary>Text to type (for the "type" action).</summary>
+    /// <summary>Text to type (for "type"), or the exact option label to choose (for "select").</summary>
     public string? Value { get; set; }
+
+    /// <summary>
+    /// What a tester should observe once this action succeeds, phrased as a verifiable assertion
+    /// ("The Products page is displayed with 6 items"). Exploration stores this on the proposed step so
+    /// applied steps carry a real expected result instead of an empty column.
+    /// </summary>
+    public string? ExpectedResult { get; set; }
 
     /// <summary>True when the step's goal has been achieved and no further actions are needed.</summary>
     public bool StepComplete { get; set; }

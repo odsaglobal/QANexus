@@ -9,4 +9,12 @@ public sealed record ProposedStep
     public int Order { get; init; }
     public required string Action { get; init; }
     public string? ExpectedResult { get; init; }
+
+    /// <summary>
+    /// The concrete, replayable browser script the exploration actually executed for this step
+    /// (JSON array of { kind, target, value }). Carried through Apply into
+    /// <c>ScenarioStep.RecordedActionsJson</c> so a subsequent RUN can replay it deterministically
+    /// — direct Playwright, no AI. Null for steps that were authored by hand rather than explored.
+    /// </summary>
+    public string? RecordedActionsJson { get; init; }
 }

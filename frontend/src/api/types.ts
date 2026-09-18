@@ -142,6 +142,8 @@ export interface RequirementDetail {
 
 // ----- Scenarios -----
 
+export type TestPlatform = 'Web' | 'Api' | 'Mobile' | 'Database';
+
 export interface ScenarioStep {
   order: number;
   action: string;
@@ -149,6 +151,7 @@ export interface ScenarioStep {
   needsReview?: boolean;
   reviewReason?: string | null;
   hasRecording?: boolean;
+  platform?: TestPlatform;
 }
 
 export interface Scenario {
@@ -166,6 +169,8 @@ export interface Scenario {
   steps: ScenarioStep[];
   proposedSteps?: ScenarioStep[];
   canRevert?: boolean;
+  /** When true a Run may use one AI turn to repair a broken locator; when false runs stay fully deterministic. */
+  autoHealEnabled?: boolean;
   createdAtUtc: string;
 }
 
@@ -229,9 +234,52 @@ export interface DashboardSummary {
   discoveredPageCount: number;
 }
 
+// ----- AI Insights -----
+
+export type InsightSeverity = 'Critical' | 'Warning' | 'Info';
+export type InsightCategory = 'Reliability' | 'Coverage' | 'Quality' | 'Maintenance';
+
+export interface AiInsight {
+  id: string;
+  category: InsightCategory;
+  severity: InsightSeverity;
+  title: string;
+  summary: string;
+  suggestedAction: string;
+  /** The observations the finding was derived from, newest first where time-ordered. */
+  evidence: string[];
+  projectId?: string | null;
+  projectName?: string | null;
+  scenarioId?: string | null;
+  scenarioTitle?: string | null;
+  lastSeenUtc?: string | null;
+}
+
+export interface AiInsights {
+  generatedAtUtc: string;
+  runsAnalyzed: number;
+  scenariosAnalyzed: number;
+  stepResultsAnalyzed: number;
+  insights: AiInsight[];
+}
+
 // ----- Scenario runs (per-scenario exploration results) -----
 
 export type StepRunStatus = 'Passed' | 'Healed' | 'Failed' | 'Skipped';
+
+/**
+ * One assertion compiled from a step's expected result, with its own verdict and the concrete value
+ * read off the page. Present only for steps whose expectation was compiled; older runs have none and
+ * fall back to rendering the step's `detail` sentence.
+ */
+export interface StepCheckResult {
+  label: string;
+  passed: boolean;
+  expected?: string | null;
+  actual?: string | null;
+  /** The assertion could not be evaluated at all (selector matched nothing) — the test needs fixing. */
+  unresolved?: boolean;
+}
 
 export interface ScenarioStepResult {
   stepOrder: number;
@@ -239,6 +287,7 @@ export interface ScenarioStepResult {
   status: StepRunStatus;
   detail?: string | null;
   url?: string | null;
+  checks?: StepCheckResult[] | null;
 }
 
 export interface ScenarioRun {
@@ -327,36 +376,26 @@ export interface DiscoveredPage {
   httpStatusCode?: number | null;
   screenshotPath?: string | null;
   hasAccessibilityTree: boolean;
-  elementCount: number;
   depthFromRoot: number;
   discoveredFromUrl?: string | null;
   createdAtUtc: string;
 }
 
-export interface ElementLocatorRecord {
-  id: string;
-  strategy: string;
-  value: string;
-  isPrimary: boolean;
-  confidenceScore: number;
-  isVerified: boolean;
-  failureCount: number;
+/**
+ * One persisted step result for a session, tagged with its scenario — the full, ordered execution
+ * trace (steps + screenshot + validation detail) behind the Executions "View" detail. Works for both
+ * completed and still-running sessions, unlike the live-only SignalR step stream.
+ */
+export interface SessionStepResult {
+  scenarioId: string;
+  scenarioTitle: string;
+  stepOrder: number;
+  action: string;
+  status: string;
+  detail?: string | null;
+  url?: string | null;
+  screenshotPath?: string | null;
+  createdAtUtc: string;
+  checks?: StepCheckResult[] | null;
 }
 
-export interface DiscoveredElement {
-  id: string;
-  pageId: string;
-  name?: string | null;
-  role?: string | null;
-  ariaLabel?: string | null;
-  textContent?: string | null;
-  placeholder?: string | null;
-  dataTestId?: string | null;
-  boundingBoxJson?: string | null;
-  screenshotPath?: string | null;
-  aiDescription?: string | null;
-  isInteractive: boolean;
-  isVisible: boolean;
-  confidenceScore: number;
-  locators: ElementLocatorRecord[];
-}

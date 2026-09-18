@@ -38,3 +38,29 @@ export async function updateProject(payload: UpdateProjectRequest): Promise<Proj
 export async function deleteProject(id: string): Promise<void> {
   await apiClient.delete(`/projects/${id}`);
 }
+
+export interface ProjectMember {
+  userId: string;
+  email: string;
+  displayName: string;
+  role: string;
+}
+
+export async function listProjectMembers(projectId: string): Promise<ProjectMember[]> {
+  const { data } = await apiClient.get<ProjectMember[]>(`/projects/${projectId}/members`);
+  return data;
+}
+
+export async function addProjectMember(projectId: string, userId: string, role: string): Promise<ProjectMember> {
+  const { data } = await apiClient.post<ProjectMember>(`/projects/${projectId}/members`, { userId, role });
+  return data;
+}
+
+export async function updateProjectMemberRole(projectId: string, userId: string, role: string): Promise<ProjectMember> {
+  const { data } = await apiClient.put<ProjectMember>(`/projects/${projectId}/members/${userId}`, { role });
+  return data;
+}
+
+export async function removeProjectMember(projectId: string, userId: string): Promise<void> {
+  await apiClient.delete(`/projects/${projectId}/members/${userId}`);
+}

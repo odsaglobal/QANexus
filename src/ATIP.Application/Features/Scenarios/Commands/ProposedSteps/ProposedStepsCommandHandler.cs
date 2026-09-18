@@ -77,7 +77,13 @@ public sealed class ProposedStepsCommandHandler :
             .AsNoTracking()
             .Where(s => s.ScenarioId == scenarioId)
             .OrderBy(s => s.Order)
-            .Select(s => new ProposedStep { Order = s.Order, Action = s.Action, ExpectedResult = s.ExpectedResult })
+            .Select(s => new ProposedStep
+            {
+                Order = s.Order,
+                Action = s.Action,
+                ExpectedResult = s.ExpectedResult,
+                RecordedActionsJson = s.RecordedActionsJson,
+            })
             .ToListAsync(ct);
 
     private async Task<ScenarioDto> ReloadAsync(Guid projectId, Guid id, CancellationToken ct)
@@ -105,6 +111,8 @@ public sealed class ProposedStepsCommandHandler :
                 Order = order++,
                 Action = s.Action,
                 ExpectedResult = s.ExpectedResult,
+                // Preserve the explored/previous replay script so RUN stays deterministic (no AI) after Apply.
+                RecordedActionsJson = s.RecordedActionsJson,
             });
         }
     }

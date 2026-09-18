@@ -21,7 +21,6 @@ public sealed class GetDiscoveredPageQueryHandler
     {
         var page = await _db.DiscoveredPages
             .AsNoTracking()
-            .Include(p => p.Elements).ThenInclude(e => e.Locators)
             .FirstOrDefaultAsync(p => p.Id == request.Id, cancellationToken)
             ?? throw new NotFoundException(nameof(DiscoveredPage), request.Id);
 

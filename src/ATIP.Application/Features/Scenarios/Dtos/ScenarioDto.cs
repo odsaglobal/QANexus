@@ -22,6 +22,13 @@ public sealed record ScenarioDto
     public IReadOnlyList<ProposedStep> ProposedSteps { get; init; } = [];
     /// <summary>True when a previous step set was backed up and can be restored.</summary>
     public bool CanRevert { get; init; }
+
+    /// <summary>
+    /// When true, a RUN may use one focused AI turn to re-locate a broken locator and repair the
+    /// recording. When false the run is 100% deterministic and never calls the LLM.
+    /// </summary>
+    public bool AutoHealEnabled { get; init; } = true;
+
     public required DateTimeOffset CreatedAtUtc { get; init; }
 
     public static ScenarioDto FromEntity(Scenario s) => new()
@@ -43,6 +50,7 @@ public sealed record ScenarioDto
             .ToList(),
         ProposedSteps = DeserializeProposed(s.ProposedStepsJson),
         CanRevert = !string.IsNullOrWhiteSpace(s.PreviousStepsJson),
+        AutoHealEnabled = s.AutoHealEnabled,
         CreatedAtUtc = s.CreatedAtUtc,
     };
 
@@ -90,6 +98,9 @@ public sealed record ScenarioStepDto
     public string? ReviewReason { get; init; }
     public bool HasRecording { get; init; }
 
+    /// <summary>Which system the step drives: Web, Api, Mobile or Database.</summary>
+    public required string Platform { get; init; }
+
     public static ScenarioStepDto FromEntity(ScenarioStep s) => new()
     {
         Order = s.Order,
@@ -98,5 +109,6 @@ public sealed record ScenarioStepDto
         NeedsReview = s.NeedsReview,
         ReviewReason = s.ReviewReason,
         HasRecording = !string.IsNullOrWhiteSpace(s.RecordedActionsJson),
+        Platform = s.Platform.ToString(),
     };
 }

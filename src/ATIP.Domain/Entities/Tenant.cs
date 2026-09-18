@@ -17,6 +17,12 @@ public class Tenant : AuditableEntity, ISoftDeletable
     /// <summary>Optional external identity-provider (Azure AD) tenant/directory id.</summary>
     public string? ExternalDirectoryId { get; set; }
 
+    /// <summary>
+    /// False until the workspace owner completes first-run onboarding (naming the workspace).
+    /// New tenants provisioned on first sign-in start un-onboarded so the app prompts for a name.
+    /// </summary>
+    public bool IsOnboarded { get; set; }
+
     public bool IsActive { get; set; } = true;
 
     public bool IsDeleted { get; set; }

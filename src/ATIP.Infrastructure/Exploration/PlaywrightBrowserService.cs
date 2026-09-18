@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using ATIP.Application.Common.Interfaces;
 using ATIP.Domain.Enums;
 using Microsoft.Playwright;
 
@@ -10,65 +11,12 @@ namespace ATIP.Infrastructure.Exploration;
 /// Thin Playwright wrapper used exclusively by <see cref="ExplorerAgent"/>. One instance per
 /// exploration session; disposed after the session completes.
 /// </summary>
-public sealed class PlaywrightBrowserService : IAsyncDisposable
+/// <remarks>
+/// Split across two files: this one holds exploration and snapshotting; the capabilities file adds
+/// the primitives the generic test engine drives (dialogs, frames, tabs, uploads, browser state).
+/// </remarks>
+public sealed partial class PlaywrightBrowserService : IAsyncDisposable
 {
-
-    // JavaScript injected into every page to discover interactive elements.
-    private const string ElementDiscoveryScript = """
-        (() => {
-          const sel = [
-            'a[href]', 'button', 'input:not([type="hidden"])', 'select', 'textarea', 'label',
-            '[role="button"]', '[role="link"]', '[role="checkbox"]', '[role="radio"]',
-            '[role="combobox"]', '[role="listbox"]', '[role="menuitem"]', '[role="option"]',
-            '[role="tab"]', '[role="switch"]', '[role="slider"]', '[tabindex="0"]'
-          ].join(',');
-
-          const getXPath = (el) => {
-            if (!el || el === document) return '';
-            if (el.id) return `//*[@id="${el.id}"]`;
-            const siblings = Array.from(el.parentNode?.children || []).filter(s => s.tagName === el.tagName);
-            const idx = siblings.indexOf(el) + 1;
-            const tag = el.tagName.toLowerCase();
-            return getXPath(el.parentNode) + '/' + (siblings.length > 1 ? `${tag}[${idx}]` : tag);
-          };
-
-          const getCss = (el) => {
-            if (el.id) return '#' + CSS.escape(el.id);
-            if (el.getAttribute('data-testid')) return `[data-testid="${el.getAttribute('data-testid')}"]`;
-            const tag = el.tagName.toLowerCase();
-            const cls = el.className ? '.' + el.className.trim().split(/\s+/).slice(0, 2).map(c => CSS.escape(c)).join('.') : '';
-            return tag + cls;
-          };
-
-          const seen = new Set();
-          const results = [];
-          for (const el of document.querySelectorAll(sel)) {
-            const rect = el.getBoundingClientRect();
-            if (rect.width < 1 || rect.height < 1) continue;
-            const key = el.tagName + ':' + (el.id || el.getAttribute('aria-label') || el.textContent?.trim().substring(0, 30));
-            if (seen.has(key)) continue;
-            seen.add(key);
-            results.push({
-              tagName: el.tagName.toLowerCase(),
-              role: el.getAttribute('role') || el.tagName.toLowerCase(),
-              ariaLabel: el.getAttribute('aria-label') || '',
-              name: el.getAttribute('aria-label') || el.textContent?.trim().substring(0, 100) || el.getAttribute('placeholder') || '',
-              placeholder: el.getAttribute('placeholder') || '',
-              textContent: el.textContent?.trim().substring(0, 200) || '',
-              dataTestId: el.getAttribute('data-testid') || el.getAttribute('data-test') || '',
-              id: el.id || '',
-              href: el instanceof HTMLAnchorElement ? el.href : '',
-              inputType: el instanceof HTMLInputElement ? el.type : '',
-              cssSelector: getCss(el),
-              xpath: getXPath(el),
-              rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) },
-              isInteractive: true
-            });
-            if (results.length >= 250) break;
-          }
-          return results;
-        })()
-        """;
 
     // Playwright-MCP-style snapshot. Stamps every VISIBLE interactive element with a stable
     // data-atip-ref (e1, e2, …) and returns a compact, ref-annotated list the LLM selects from,
@@ -77,12 +25,20 @@ public sealed class PlaywrightBrowserService : IAsyncDisposable
     // — exactly how Copilot/Claude drive the browser through Playwright MCP (no brittle text matching).
     private const string AgentSnapshotScript = """
         (max) => {
-          const sel = [
+          // Natively interactive elements — always worth showing to the agent.
+          const coreSel = [
             'a[href]', 'button', 'input:not([type="hidden"])', 'select', 'textarea',
             '[role="button"]', '[role="link"]', '[role="checkbox"]', '[role="radio"]',
             '[role="combobox"]', '[role="listbox"]', '[role="menuitem"]', '[role="option"]',
             '[role="tab"]', '[role="switch"]', '[role="slider"]', '[contenteditable="true"]', '[tabindex="0"]'
           ].join(',');
+          // SPA controls that are NOT natively interactive: href-less anchors and clickable
+          // div/span/li wired up with click handlers (e.g. SauceDemo's cart is
+          // `<a class="shopping_cart_link" data-test="shopping-cart-link">` with NO href). Matching
+          // only `a[href]` made such controls invisible to the agent, so it could never click them.
+          // These are admitted only when they really look clickable (see the cursor check below).
+          const looseSel = ['a', '[onclick]', '[data-test]', '[data-testid]'].join(',');
+          const sel = coreSel + ',' + looseSel;
           const isVisible = (el) => {
             const r = el.getBoundingClientRect();
             if (r.width < 1 || r.height < 1) return false;
@@ -104,26 +60,77 @@ public sealed class PlaywrightBrowserService : IAsyncDisposable
               if (it === 'button' || it === 'submit' || it === 'reset') return 'button';
               return 'textbox';
             }
-            return t.toLowerCase();
+            return 'clickable';
+          };
+          const testIdOf = (el) => el.getAttribute('data-test') || el.getAttribute('data-testid') || '';
+          // An element's OWN text nodes only, so a wrapper never reports its children's text.
+          const ownTextOf = (el) => {
+            let t = '';
+            for (const node of el.childNodes) {
+              if (node.nodeType === 3) t += node.nodeValue;
+            }
+            return t.replace(/\s+/g, ' ').trim();
           };
           const nameOf = (el) => {
             let n = el.getAttribute('aria-label') || '';
             if (!n) n = (el.textContent || '').replace(/\s+/g, ' ').trim();
             if (!n) n = el.getAttribute('placeholder') || el.getAttribute('name') || el.getAttribute('title') || (el.value || '');
+            // Icon-only controls (cart, menu, close) carry no accessible text, or carry a meaningless
+            // one such as a badge count ("1"). A stable test id is far more useful to the agent and is
+            // directly replayable, so prefer it whenever the visible name is empty or too weak to act on.
+            const weak = !n || n.length <= 2 || /^\d+$/.test(n);
+            if (weak) n = testIdOf(el) || el.getAttribute('id') || n || '';
             return (n || '').replace(/\s+/g, ' ').trim().slice(0, 80);
           };
           document.querySelectorAll('[data-atip-ref]').forEach(e => e.removeAttribute('data-atip-ref'));
+          // The visual affordances a framework-rendered control still carries when it has no semantics
+          // (no role, no href, no onclick attribute — React attaches handlers by delegation):
+          //   - `cursor: pointer`   — the classic hover affordance (sort options, facet rows).
+          //   - `user-select: none` — set on TAPPABLE controls so their label isn't selected on tap,
+          //     while real content text stays selectable. React-Native-Web buttons (Flipkart's
+          //     "Add to cart"/"Buy now") set ONLY this and keep `cursor: auto`, so the pointer test
+          //     alone missed them entirely. Require a short, button-sized label for this weaker signal
+          //     so ordinary copy inside a non-selectable wrapper isn't mistaken for a control.
+          const looksClickableStyle = (el, text) => {
+            const s = getComputedStyle(el);
+            return s.cursor === 'pointer'
+              || (s.userSelect === 'none' && text.length >= 2 && text.length <= 30);
+          };
           const lines = [];
           let n = 0;
           const seen = new Set();
-          for (const el of document.querySelectorAll(sel)) {
-            if (n >= max) break;
-            if (!isVisible(el)) continue;
+          const emitted = new Set();
+          const emit = (el, isCore) => {
+            if (!isCore) {
+              // Only admit a loosely-matched element when it actually behaves like a control. An
+              // anchor always counts (browsers only apply cursor:pointer to `a[href]`, so an href-less
+              // SPA anchor like SauceDemo's cart would otherwise be filtered out here); anything else
+              // must declare a click handler or carry a control's visual affordance.
+              const looksClickable = el.tagName === 'A'
+                || el.hasAttribute('onclick')
+                || looksClickableStyle(el, ownTextOf(el));
+              if (!looksClickable) return false;
+              // Skip layout wrappers that merely CONTAIN a real control — click the control itself.
+              if (el.querySelector(coreSel)) return false;
+              // querySelectorAll yields document order, so an ancestor is emitted before its children;
+              // skip descendants of an already-emitted control to avoid duplicate targets.
+              let p = el.parentElement, nested = false;
+              while (p) { if (emitted.has(p)) { nested = true; break; } p = p.parentElement; }
+              if (nested) return false;
+            }
+
             const role = roleOf(el);
-            const name = nameOf(el);
+            // For a semantic control, nameOf's textContent fallback is the accessible name. For a
+            // framework-rendered <div> it is NOT: textContent concatenates every descendant, so a
+            // wrapper came back as "Location not setSelect delivery location" — a label that exists
+            // nowhere on screen and that the replay engine can never locate again. Such an element is
+            // only admitted because of its OWN text, so use exactly that as its name.
+            const name = isCore ? nameOf(el) : (ownTextOf(el) || nameOf(el));
+            if (!name) return false;
             const key = role + '|' + name + '|' + Math.round(el.getBoundingClientRect().y);
-            if (seen.has(key)) continue;
+            if (seen.has(key)) return false;
             seen.add(key);
+            emitted.add(el);
             n++;
             const ref = 'e' + n;
             el.setAttribute('data-atip-ref', ref);
@@ -132,7 +139,108 @@ public sealed class PlaywrightBrowserService : IAsyncDisposable
             let line = '- ' + role + ' "' + name + '" [ref=' + ref + ']';
             if (ph) line += ' (placeholder: "' + ph + '")';
             if (type) line += ' (type: ' + type + ')';
+            // The CURRENT VALUE of a field is page state, not markup: without it neither the agent
+            // nor outcome verification can tell whether text was actually entered. Password values
+            // are reported as a masked length so a secret never reaches the model or the logs.
+            if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+              const val = el.value || '';
+              if (val) {
+                line += type === 'password'
+                  ? ' (value: ' + '*'.repeat(Math.min(val.length, 20)) + ')'
+                  : ' (value: "' + val.slice(0, 80) + '")';
+              }
+            }
+            // A stable test id is the best descriptor to record: it survives copy changes and the
+            // replay engine can resolve it directly via [data-test=...].
+            const testId = testIdOf(el);
+            if (testId && testId !== name) line += ' (testid: "' + testId + '")';
+            // A badge/counter is short text INSIDE a control (cart count, unread count). nameOf drops
+            // it as a weak name, but it is often the very thing an expected result asserts on, so
+            // report it separately rather than losing it.
+            const inner = (el.textContent || '').replace(/\s+/g, ' ').trim();
+            if (inner && inner.length <= 20 && inner !== name && !name.includes(inner)) {
+              line += ' (text: "' + inner + '")';
+            }
+            // Without its options a native dropdown is unusable to the agent.
+            if (el.tagName === 'SELECT' && el.options) {
+              const opts = Array.from(el.options).map(o => (o.text || '').trim()).filter(Boolean).slice(0, 12);
+              if (opts.length) line += ' (options: ' + opts.map(o => '"' + o + '"').join(', ') + ')';
+            }
             lines.push(line);
+            return true;
+          };
+
+          for (const el of document.querySelectorAll(sel)) {
+            if (n >= max) break;
+            if (!isVisible(el)) continue;
+            emit(el, el.matches(coreSel));
+          }
+
+          // ── PLAIN CLICKABLE ELEMENTS ───────────────────────────────────────────────────────
+          // React / React-Native-Web sites (Flipkart, and most design-system apps) render controls as
+          // bare `<div>`s: no href, no role, no onclick attribute (handlers are attached by the
+          // framework) and no test id. Nothing above matches them, so sort options, filter rows,
+          // in-page tabs and even "Add to cart" were completely invisible to the agent — it reported
+          // "no actionable element in the snapshot" and burned its whole turn budget. Scan for the
+          // affordances they do carry (see looksClickableStyle) in a SECOND pass with its own budget:
+          // doing it in the first pass would let header chrome consume `max` before the real controls.
+          if (n < max * 2) {
+            let scanned = 0;
+            for (const el of document.querySelectorAll('div,span,li,td,label,p')) {
+              if (n >= max * 2) break;
+              // Bound the work on very large pages; getComputedStyle is the expensive part, so the
+              // cheap text and visibility tests run first.
+              if (++scanned > 6000) break;
+              const t = ownTextOf(el);
+              if (t.length < 2 || t.length > 60) continue;
+              if (!isVisible(el)) continue;
+              if (!looksClickableStyle(el, t)) continue;
+              emit(el, false);
+            }
+          }
+
+          // ── VISIBLE TEXT ───────────────────────────────────────────────────────────────────
+          // Controls alone are not enough: most expected results are assertions about TEXT
+          // ("the Checkout page is displayed", "Error: First Name is required", "Thank you for your
+          // order!"). Headings, banners and totals are not interactive, so without this section the
+          // agent is blind to the very outcome it is trying to confirm and burns its whole turn
+          // budget re-clicking. Only an element's OWN text nodes are read, so parents don't repeat
+          // their children's text, and anything inside a control already listed above is skipped.
+          const ownText = ownTextOf;
+          const maxTextLines = 140;
+          const texts = [];
+          // Counts, not a plain set: two products can legitimately cost the same, and dropping the
+          // repeat would silently remove a row from an ordered list. Repeats are capped so that
+          // boilerplate still cannot flood the snapshot.
+          const textCounts = new Map();
+          const collectText = (nodes) => {
+            for (const el of nodes) {
+              if (texts.length >= maxTextLines) return;
+              const t = ownText(el);
+              if (t.length < 2 || t.length > 200) continue;
+              if (!/[a-z0-9]/i.test(t)) continue;
+              // Text belonging to a button already appears as that button's name above.
+              if (el.closest('button,select,textarea,[role="button"]')) continue;
+              if ((textCounts.get(t) || 0) >= 2) continue;
+              if (!isVisible(el)) continue;
+              textCounts.set(t, (textCounts.get(t) || 0) + 1);
+              texts.push(t);
+            }
+          };
+          // Outcome-bearing text first — headings, alerts and error banners carry the result of the
+          // last action, so they must survive the line cap even on a long page.
+          collectText(document.querySelectorAll(
+            'h1,h2,h3,h4,h5,h6,[role="alert"],[role="status"],[aria-live],[data-test*="error"],[data-testid*="error"],[class*="error"],[class*="title"],[class*="message"]'));
+          // Then everything else in DOCUMENT ORDER. Order matters: assertions such as "products are
+          // sorted by price ascending" or "the cheapest item is first" can only be judged if the
+          // text is reported in the order it appears on the page. Link text is included for the same
+          // reason — item names live inside links, and a price list without its names proves nothing.
+          collectText(document.querySelectorAll('p,span,div,li,td,th,label,legend,strong,dt,dd,figcaption,a'));
+
+          if (texts.length) {
+            lines.push('');
+            lines.push('Visible text on the page:');
+            for (const t of texts) lines.push('  ' + t);
           }
           return lines.join('\n');
         }
@@ -147,6 +255,39 @@ public sealed class PlaywrightBrowserService : IAsyncDisposable
 
     public string CurrentUrl => _page?.Url ?? string.Empty;
     public string CurrentTitle { get; private set; } = string.Empty;
+
+    /// <summary>
+    /// Every open tab across the browser's contexts, with the one currently being driven marked
+    /// active. Titles are read live, so this is a snapshot rather than a cached list.
+    /// </summary>
+    public async Task<IReadOnlyList<BrowserTabInfo>> ListTabsAsync()
+    {
+        var tabs = new List<BrowserTabInfo>();
+        if (_browser is null)
+        {
+            return tabs;
+        }
+
+        var pages = _browser.Contexts.SelectMany(c => c.Pages).Where(p => !p.IsClosed).ToList();
+        for (var i = 0; i < pages.Count; i++)
+        {
+            var page = pages[i];
+            string title;
+            try
+            {
+                // A tab mid-navigation can throw here; its URL is still worth showing.
+                title = await page.TitleAsync();
+            }
+            catch
+            {
+                title = string.Empty;
+            }
+
+            tabs.Add(new BrowserTabInfo(i, title, page.Url, ReferenceEquals(page, _page)));
+        }
+
+        return tabs;
+    }
 
     public async Task InitializeAsync(string browserType = "chromium", bool headless = true)
     {
@@ -181,11 +322,17 @@ public sealed class PlaywrightBrowserService : IAsyncDisposable
         // Suppress most console noise; keep errors surfaced through exceptions.
         _page.PageError += (_, err) => { /* ignore page errors during exploration */ };
 
-        // Auto-dismiss native JS dialogs (alert/confirm/prompt/beforeunload) so they never block the run.
-        _page.Dialog += async (_, dialog) =>
-        {
-            try { await dialog.DismissAsync(); } catch { /* dialog may already be handled */ }
-        };
+        // Native JS dialogs (alert/confirm/prompt/beforeunload) block the page until answered, so
+        // one must always be handled. The policy decides how; the default dismisses, which is what
+        // exploration wants, while a step can opt into accepting or into typing a prompt answer.
+        _page.Dialog += HandleDialogAsync;
+
+        // Real catalogues open detail pages in a NEW TAB — every Flipkart product card is
+        // target="_blank". Playwright keeps driving the ORIGINAL tab, so a card click looked like it
+        // did nothing: the agent clicked, then reported "the product details page is not displayed;
+        // the user is still on the search results page". Adopt any newly opened tab as the active page
+        // so snapshots, assertions and later actions all target what a real user would be looking at.
+        _page.Context.Page += (_, opened) => AdoptPage(opened);
 
         // Pre-grant geolocation/notification permissions so the browser never shows a permission prompt.
         try
@@ -193,6 +340,57 @@ public sealed class PlaywrightBrowserService : IAsyncDisposable
             await _page.Context.GrantPermissionsAsync(new[] { "geolocation", "notifications" });
         }
         catch { /* permission grant is best-effort */ }
+    }
+
+    /// <summary>
+    /// Makes a newly opened tab the active page, wiring it with the same noise-suppression and dialog
+    /// handling as the original. When it closes, falls back to the last surviving tab so the session
+    /// never ends up pointing at a dead page.
+    /// </summary>
+    private void AdoptPage(IPage opened)
+    {
+        try
+        {
+            opened.PageError += (_, _) => { /* ignore page errors during exploration */ };
+            opened.Dialog += HandleDialogAsync;
+            opened.Close += (_, _) =>
+            {
+                if (ReferenceEquals(_page, opened))
+                {
+                    _page = _browser?.Contexts
+                        .SelectMany(c => c.Pages)
+                        .LastOrDefault(p => !p.IsClosed);
+
+                    if (_page is not null && _onFrame is not null)
+                    {
+                        _ = FollowScreencastAsync(_page);
+                    }
+                }
+            };
+
+            _page = opened;
+            // The new tab has its own frame tree, so any frame we had switched into is gone.
+            _frameSelectors.Clear();
+
+            if (_onFrame is not null)
+            {
+                _ = FollowScreencastAsync(opened);
+            }
+        }
+        catch { /* adopting a popup is best-effort — never break the run over it */ }
+    }
+
+    /// <summary>Moves the live screencast to <paramref name="page"/>, swallowing any failure.</summary>
+    private async Task FollowScreencastAsync(IPage page)
+    {
+        try
+        {
+            await AttachScreencastAsync(page);
+        }
+        catch
+        {
+            // Losing the live view must never abort the run.
+        }
     }
 
     private static bool HasMissingBrowserException(Exception ex)
@@ -387,6 +585,268 @@ public sealed class PlaywrightBrowserService : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// The page's full visible text, for VERIFYING an expected result — deliberately separate from
+    /// <see cref="SnapshotForAgentAsync"/>.
+    /// <para>
+    /// The agent snapshot is budgeted (a capped element list plus ~140 text lines) so the LLM prompt
+    /// stays small and cheap. That budget is right for DECIDING what to do next, but wrong for JUDGING
+    /// whether something is on screen: on a long page the cap is spent long before the bottom is
+    /// reached — on a Flipkart product page it ran out inside the specification table, so "Add to cart"
+    /// never made it into the evidence and a perfectly correct step was reported as failed. The
+    /// accessibility outline does not rescue it either, because framework-rendered controls
+    /// (React-Native-Web and similar) are plain role-less &lt;div&gt;s. Verification therefore reads the
+    /// whole rendered text, which <c>innerText</c> already limits to what is actually visible.
+    /// </para>
+    /// </summary>
+    public async Task<string> GetVisibleTextAsync(int maxChars = 40_000, CancellationToken ct = default)
+    {
+        try
+        {
+            var text = await _page!.EvaluateAsync<string>(
+                @"() => {
+                    const t = document.body ? document.body.innerText : '';
+                    return t.split('\n').map(l => l.trim()).filter(Boolean).join('\n');
+                }");
+
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return string.Empty;
+            }
+
+            return text.Length > maxChars ? text[..maxChars] : text;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// Reads the concrete value(s) behind a CSS selector so a step's assertion can be checked by
+    /// comparison rather than by asking a language model what the page "looks like".
+    /// <para>
+    /// Only rendered elements are returned: a hidden template row or an off-screen duplicate carries
+    /// no meaning for a user, but it would silently corrupt an ordering or count assertion. Results
+    /// come back in document order, which is exactly the order the ordering operators compare.
+    /// </para>
+    /// </summary>
+    /// <param name="source">
+    /// <c>value</c> reads form state (for a &lt;select&gt;, the selected option's visible label);
+    /// anything else reads visible text.
+    /// </param>
+    /// <returns>
+    /// The matched values, or <c>null</c> if the selector itself is invalid — a broken assertion is a
+    /// different problem from one that legitimately matched nothing, and the report says so.
+    /// </returns>
+    public async Task<IReadOnlyList<string>?> ReadValuesAsync(
+        string selector,
+        string source = "text",
+        int max = 200,
+        CancellationToken ct = default)
+    {
+        if (_page is null || string.IsNullOrWhiteSpace(selector))
+        {
+            return null;
+        }
+
+        try
+        {
+            var values = await _page.EvaluateAsync<string[]?>(
+                @"([selector, source, max]) => {
+                    let nodes;
+                    try { nodes = document.querySelectorAll(selector); }
+                    catch { return null; }
+
+                    const rendered = (el) => {
+                        if (!(el instanceof Element)) return false;
+                        const style = window.getComputedStyle(el);
+                        if (style.visibility === 'hidden' || style.display === 'none') return false;
+                        return el.getClientRects().length > 0;
+                    };
+
+                    const out = [];
+                    for (const el of nodes) {
+                        if (out.length >= max) break;
+                        if (!rendered(el)) continue;
+
+                        if (source === 'value') {
+                            if (el.tagName === 'SELECT') {
+                                const opt = el.selectedOptions && el.selectedOptions[0];
+                                out.push(((opt ? (opt.textContent || opt.value) : el.value) || '').trim());
+                            } else if ('value' in el) {
+                                out.push(String(el.value ?? '').trim());
+                            } else {
+                                out.push((el.textContent || '').replace(/\s+/g, ' ').trim());
+                            }
+                        } else {
+                            out.push((el.textContent || '').replace(/\s+/g, ' ').trim());
+                        }
+                    }
+                    return out;
+                }",
+                new object[] { selector, source, max });
+
+            return values;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Builds a digest of the page's selectable, value-bearing elements: for each stable CSS selector,
+    /// how many rendered elements it matches and a few of their actual values.
+    /// <para>
+    /// This exists so an expectation can be compiled into a real assertion. Raw HTML is the wrong input
+    /// for that — it is mostly layout wrappers and it hides how many times a selector actually matches,
+    /// which is precisely what an ordering or count assertion depends on. Reporting "(24 matches)"
+    /// alongside three sample prices lets a selector be chosen on evidence rather than on guesswork.
+    /// </para>
+    /// </summary>
+    public async Task<string> GetAssertionContextAsync(int maxGroups = 120, CancellationToken ct = default)
+    {
+        if (_page is null)
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            var lines = await _page.EvaluateAsync<string[]>(
+                @"(maxGroups) => {
+                    const rendered = (el) => {
+                        const style = window.getComputedStyle(el);
+                        if (style.visibility === 'hidden' || style.display === 'none') return false;
+                        return el.getClientRects().length > 0;
+                    };
+
+                    // Prefer attributes a developer chose over ones a bundler generated: hashed class
+                    // names change on every deploy and would produce an assertion that rots immediately.
+                    const unstable = (s) => !s || s.length < 2 || /\d{3}/.test(s) || /^(css|sc|jsx)-/.test(s);
+
+                    const selectorFor = (el) => {
+                        for (const attr of ['data-test', 'data-testid', 'data-qa']) {
+                            const v = el.getAttribute && el.getAttribute(attr);
+                            if (v) return '[' + attr + '=""' + v + '""]';
+                        }
+                        if (el.id && !unstable(el.id)) return '#' + el.id;
+                        const cls = (typeof el.className === 'string' ? el.className : '')
+                            .trim().split(/\s+/).filter(c => !unstable(c)).slice(0, 2);
+                        return el.tagName.toLowerCase() + cls.map(c => '.' + c).join('');
+                    };
+
+                    const groups = new Map();
+                    for (const el of document.querySelectorAll('*')) {
+                        const tag = el.tagName;
+                        const isField = tag === 'SELECT' || tag === 'INPUT' || tag === 'TEXTAREA';
+                        // Leaf elements carry the page's real values; wrappers just repeat their children.
+                        if (!isField && el.children.length > 0) continue;
+                        if (!rendered(el)) continue;
+
+                        let value;
+                        if (tag === 'SELECT') {
+                            const opt = el.selectedOptions && el.selectedOptions[0];
+                            value = ((opt ? (opt.textContent || opt.value) : el.value) || '').trim();
+                        } else if (isField) {
+                            value = String(el.value == null ? '' : el.value).trim();
+                        } else {
+                            value = (el.textContent || '').replace(/\s+/g, ' ').trim();
+                        }
+                        if (!value) continue;
+
+                        const key = (isField ? 'value|' : 'text|') + selectorFor(el);
+                        if (!groups.has(key)) groups.set(key, []);
+                        groups.get(key).push(value.length > 40 ? value.slice(0, 40) + '\u2026' : value);
+                    }
+
+                    const out = [];
+                    // Repeated groups first: those are the lists that ordering and count checks target.
+                    const sorted = [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
+                    for (const [key, values] of sorted.slice(0, maxGroups)) {
+                        const parts = key.split('|');
+                        out.push(parts[0] + ' ' + parts[1] + ' (' + values.length + ' match' + (values.length === 1 ? '' : 'es') + ') -> ' + values.slice(0, 3).join(' | '));
+                    }
+                    return out;
+                }",
+                maxGroups);
+
+            return string.Join("\n", lines);
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// Waits for the page to stop changing before its state is read.
+    /// <para>
+    /// Waiting on load state alone is NOT enough: a click that submits a form returns before the
+    /// browser has begun navigating, so the old document is still "loaded" and the page would be
+    /// read — and the step judged — against the page it is navigating away from. So this polls until
+    /// the URL and ready state have been stable across several consecutive samples, which lets a
+    /// navigation that starts a moment after the click be observed. Every wait is best-effort and
+    /// bounded: a page that never goes quiet must not stall the run.
+    /// </para>
+    /// </summary>
+    public async Task WaitForPageSettledAsync(int timeoutMs = 5000, CancellationToken ct = default)
+    {
+        if (_page is null)
+        {
+            return;
+        }
+
+        const int pollMs = 150;
+        const int requiredStableSamples = 3;
+
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        string? lastUrl = null;
+        var stable = 0;
+
+        while (stable < requiredStableSamples && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(pollMs, ct);
+
+            string url;
+            string readyState;
+            try
+            {
+                url = _page.Url;
+                readyState = await _page.EvaluateAsync<string>("() => document.readyState");
+            }
+            catch
+            {
+                // The document is being replaced mid-navigation: not settled, keep waiting.
+                stable = 0;
+                lastUrl = null;
+                continue;
+            }
+
+            if (readyState == "complete" && url == lastUrl)
+            {
+                stable++;
+            }
+            else
+            {
+                stable = 0;
+                lastUrl = url;
+            }
+        }
+
+        try
+        {
+            await _page.WaitForLoadStateAsync(
+                LoadState.NetworkIdle,
+                new PageWaitForLoadStateOptions { Timeout = 2000 });
+        }
+        catch
+        {
+            // Best-effort: read whatever has rendered so far.
+        }
+    }
+
     public async Task<string> GetPageHtmlAsync(CancellationToken ct = default)
     {
         try
@@ -434,7 +894,30 @@ public sealed class PlaywrightBrowserService : IAsyncDisposable
         }
 
         _onFrame = onFrame;
-        _cdp = await _page.Context.NewCDPSessionAsync(_page);
+        await AttachScreencastAsync(_page);
+    }
+
+    /// <summary>
+    /// Points the CDP screencast at <paramref name="page"/>, tearing down any previous attachment.
+    /// A CDP session is bound to one page for life, so following a popup means rebuilding it —
+    /// otherwise the live view keeps showing the tab the run has already navigated away from.
+    /// </summary>
+    private async Task AttachScreencastAsync(IPage page)
+    {
+        if (_screencastFrameEvent is not null)
+        {
+            _screencastFrameEvent.OnEvent -= HandleScreencastFrame;
+            _screencastFrameEvent = null;
+        }
+
+        if (_cdp is not null)
+        {
+            try { await _cdp.SendAsync("Page.stopScreencast"); } catch { /* the old page may be gone */ }
+            try { await _cdp.DetachAsync(); } catch { /* best-effort */ }
+            _cdp = null;
+        }
+
+        _cdp = await page.Context.NewCDPSessionAsync(page);
         _screencastFrameEvent = _cdp.Event("Page.screencastFrame");
         _screencastFrameEvent.OnEvent += HandleScreencastFrame;
 
@@ -527,19 +1010,6 @@ public sealed class PlaywrightBrowserService : IAsyncDisposable
                     .slice(0, 60);
             }", origin);
             return links ?? [];
-        }
-        catch
-        {
-            return [];
-        }
-    }
-
-    public async Task<IReadOnlyList<ElementDiscoveryInfo>> DiscoverElementsAsync(CancellationToken ct = default)
-    {
-        try
-        {
-            var result = await _page!.EvaluateAsync<ElementDiscoveryInfo[]>(ElementDiscoveryScript);
-            return result ?? [];
         }
         catch
         {
@@ -647,55 +1117,12 @@ public sealed class PlaywrightBrowserService : IAsyncDisposable
     }
 
     /// <summary>
-    /// Returns a compact, numbered list of the currently visible interactive elements (role + name)
-    /// so the AI can choose a real, resolvable target rather than guessing a selector.
-    /// </summary>
-    public async Task<string> GetInteractiveSummaryAsync(int max = 50, CancellationToken ct = default)
-    {
-        var elements = await DiscoverElementsAsync(ct);
-        if (elements.Count == 0)
-        {
-            return "(no interactive elements detected)";
-        }
-
-        var sb = new StringBuilder();
-        var i = 0;
-        foreach (var el in elements)
-        {
-            var name = el.Name ?? el.AriaLabel ?? el.TextContent ?? el.Placeholder;
-            if (string.IsNullOrWhiteSpace(name))
-            {
-                continue;
-            }
-
-            name = name.Trim();
-            if (name.Length > 60)
-            {
-                name = name[..60];
-            }
-
-            sb.Append('[').Append(el.Role ?? el.TagName ?? "el").Append("] \"").Append(name).Append('"');
-            if (!string.IsNullOrWhiteSpace(el.Placeholder))
-            {
-                sb.Append(" (placeholder: ").Append(el.Placeholder.Trim()).Append(')');
-            }
-            sb.Append('\n');
-
-            if (++i >= max)
-            {
-                break;
-            }
-        }
-
-        return sb.Length == 0 ? "(no named interactive elements detected)" : sb.ToString();
-    }
-
-    /// <summary>
     /// Playwright-MCP-style page snapshot for the LLM: every visible interactive element is
     /// stamped with a stable ref (e1, e2, …) and returned as a compact list, e.g.
     ///   - button "Sign in" [ref=e5]
-    /// The agent selects an element by ref, and the ref is resolved deterministically via
-    /// <see cref="TryClickByRefAsync"/> / <see cref="TryFillByRefAsync"/> — no brittle text matching.
+    /// The agent selects an element by ref, and the ref is turned into a durable locator by
+    /// <see cref="DescribeRefAsync"/> before the engine acts on it — so the element the AI chose is
+    /// the element that gets recorded, without any brittle text matching in between.
     /// </summary>
     public async Task<string> SnapshotForAgentAsync(int max = 60, CancellationToken ct = default)
     {
@@ -712,60 +1139,6 @@ public sealed class PlaywrightBrowserService : IAsyncDisposable
         catch
         {
             return "(snapshot unavailable)";
-        }
-    }
-
-    /// <summary>Clicks the element carrying the given ref from the most recent agent snapshot.</summary>
-    public async Task<bool> TryClickByRefAsync(string reference, CancellationToken ct = default)
-    {
-        var locator = ResolveRefLocator(reference);
-        if (locator is null)
-        {
-            return false;
-        }
-
-        try
-        {
-            if (await locator.CountAsync() == 0)
-            {
-                return false;
-            }
-
-            await locator.ScrollIntoViewIfNeededAsync(new() { Timeout = 3_000 });
-            await locator.ClickAsync(new LocatorClickOptions { Timeout = 5_000 });
-            await _page!.WaitForTimeoutAsync(600);
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    /// <summary>Fills the element carrying the given ref from the most recent agent snapshot.</summary>
-    public async Task<bool> TryFillByRefAsync(string reference, string value, CancellationToken ct = default)
-    {
-        var locator = ResolveRefLocator(reference);
-        if (locator is null)
-        {
-            return false;
-        }
-
-        try
-        {
-            if (await locator.CountAsync() == 0)
-            {
-                return false;
-            }
-
-            await locator.ScrollIntoViewIfNeededAsync(new() { Timeout = 3_000 });
-            await locator.FillAsync(value, new LocatorFillOptions { Timeout = 5_000 });
-            await _page!.WaitForTimeoutAsync(300);
-            return true;
-        }
-        catch
-        {
-            return false;
         }
     }
 
@@ -830,7 +1203,7 @@ public sealed class PlaywrightBrowserService : IAsyncDisposable
         try
         {
             await _page.Keyboard.PressAsync(key.Trim());
-            await _page.WaitForTimeoutAsync(400);
+            await SettleActivePageAsync(400);
             return true;
         }
         catch
@@ -839,9 +1212,40 @@ public sealed class PlaywrightBrowserService : IAsyncDisposable
         }
     }
 
-    /// <summary>Lets the page settle for a short, bounded interval before the agent observes again.</summary>
-    public async Task WaitAsync(int milliseconds = 800, CancellationToken ct = default)
+    /// <summary>
+    /// Waits out the usual post-action settle, then — if that action spawned a popup that
+    /// <see cref="AdoptPage"/> just made active — waits for the new tab to actually be usable.
+    /// The popup event fires the instant the tab is created, when it is still blank, so without this
+    /// the next recorded action would run against an empty page and fail to find its element.
+    /// </summary>
+    private async Task SettleActivePageAsync(int quietMs)
     {
+        var before = _page;
+        if (before is null)
+        {
+            return;
+        }
+
+        try { await before.WaitForTimeoutAsync(quietMs); }
+        catch { /* the page can close mid-wait when the click navigated away */ }
+
+        var active = _page;
+        if (active is null || ReferenceEquals(active, before))
+        {
+            return;
+        }
+
+        try { await active.WaitForLoadStateAsync(LoadState.DOMContentLoaded, new() { Timeout = 15_000 }); }
+        catch { /* slow third-party frames must not fail the step */ }
+
+        // Headless Chromium still honours focus/visibility; a background tab can throttle timers and
+        // skip animations, which makes elements flaky to click.
+        try { await active.BringToFrontAsync(); }
+        catch { /* best-effort */ }
+    }
+
+    /// <summary>Lets the page settle for a short, bounded interval before the agent observes again.</summary>
+    public async Task WaitAsync(int milliseconds = 800, CancellationToken ct = default)    {
         if (_page is null)
         {
             return;
@@ -855,101 +1259,6 @@ public sealed class PlaywrightBrowserService : IAsyncDisposable
         {
             // Best-effort settle.
         }
-    }
-
-    /// <summary>
-    /// Clicks an element identified by a human hint (the exact visible text, label, or aria-label
-    /// chosen by the AI), trying a sequence of resolution strategies. Returns the index of the
-    /// strategy that resolved it (0 = primary strategy, &gt;0 = a healed/fallback strategy), or -1
-    /// if no strategy matched.
-    /// </summary>
-    public async Task<int> TryClickByHintAsync(string hint, CancellationToken ct = default)
-    {
-        if (_page is null || string.IsNullOrWhiteSpace(hint))
-        {
-            return -1;
-        }
-
-        var candidates = new Func<ILocator>[]
-        {
-            () => _page.GetByRole(AriaRole.Button, new() { Name = hint, Exact = false }),
-            () => _page.GetByRole(AriaRole.Link, new() { Name = hint, Exact = false }),
-            () => _page.GetByRole(AriaRole.Menuitem, new() { Name = hint, Exact = false }),
-            () => _page.GetByRole(AriaRole.Tab, new() { Name = hint, Exact = false }),
-            () => _page.GetByText(hint, new() { Exact = true }),
-            () => _page.GetByLabel(hint),
-            () => _page.Locator($"[aria-label={Quote(hint)}]"),
-            () => _page.GetByText(hint, new() { Exact = false }),
-            () => _page.GetByTitle(hint),
-        };
-
-        for (var i = 0; i < candidates.Length; i++)
-        {
-            try
-            {
-                var locator = candidates[i]().First;
-                if (await locator.CountAsync() == 0)
-                {
-                    continue;
-                }
-
-                await locator.ScrollIntoViewIfNeededAsync(new() { Timeout = 3_000 });
-                await locator.ClickAsync(new LocatorClickOptions { Timeout = 5_000 });
-                await _page.WaitForTimeoutAsync(600);
-                return i;
-            }
-            catch
-            {
-                // Strategy failed — try the next fallback.
-            }
-        }
-
-        return -1;
-    }
-
-    /// <summary>
-    /// Fills a field identified by a human hint (label, placeholder, or aria-label chosen by the AI),
-    /// trying a sequence of resolution strategies. Returns the index of the strategy that resolved it
-    /// (0 = primary, &gt;0 = a healed/fallback strategy), or -1 if no field matched.
-    /// </summary>
-    public async Task<int> TryFillAsync(string target, string value, CancellationToken ct = default)
-    {
-        if (_page is null || string.IsNullOrWhiteSpace(target))
-        {
-            return -1;
-        }
-
-        var candidates = new Func<ILocator>[]
-        {
-            () => _page.GetByLabel(target),
-            () => _page.GetByPlaceholder(target),
-            () => _page.GetByRole(AriaRole.Textbox, new() { Name = target, Exact = false }),
-            () => _page.Locator($"[aria-label={Quote(target)}]"),
-            () => _page.GetByPlaceholder(target, new() { Exact = false }),
-            () => _page.Locator($"input[name={Quote(target)}],input[id={Quote(target)}],textarea[name={Quote(target)}]"),
-        };
-
-        for (var i = 0; i < candidates.Length; i++)
-        {
-            try
-            {
-                var locator = candidates[i]().First;
-                if (await locator.CountAsync() == 0)
-                {
-                    continue;
-                }
-
-                await locator.FillAsync(value, new LocatorFillOptions { Timeout = 5_000 });
-                await _page.WaitForTimeoutAsync(300);
-                return i;
-            }
-            catch
-            {
-                // Strategy failed — try the next fallback.
-            }
-        }
-
-        return -1;
     }
 
     /// <summary>Counts elements matching a stored locator (by strategy). Used to verify and self-heal locators.</summary>
@@ -987,40 +1296,6 @@ public sealed class PlaywrightBrowserService : IAsyncDisposable
         catch
         {
             return 0;
-        }
-    }
-
-    /// <summary>Builds a Playwright locator from a stored <see cref="LocatorStrategy"/> and value.</summary>
-    private ILocator? BuildLocator(LocatorStrategy strategy, string value)
-    {
-        if (_page is null)
-        {
-            return null;
-        }
-
-        switch (strategy)
-        {
-            case LocatorStrategy.CSS:
-            case LocatorStrategy.DataAttribute:
-                return _page.Locator(value);
-            case LocatorStrategy.XPath:
-                return _page.Locator(value.StartsWith("xpath=") ? value : $"xpath={value}");
-            case LocatorStrategy.ARIA:
-            case LocatorStrategy.NearbyLabel:
-                return _page.Locator($"[aria-label={Quote(value)}]");
-            case LocatorStrategy.Placeholder:
-                return _page.GetByPlaceholder(value);
-            case LocatorStrategy.Text:
-                return _page.GetByText(value);
-            case LocatorStrategy.Role:
-                var parts = value.Split(':', 2);
-                if (parts.Length == 2 && Enum.TryParse<AriaRole>(parts[0], ignoreCase: true, out var role))
-                {
-                    return _page.GetByRole(role, new() { Name = parts[1], Exact = false });
-                }
-                return _page.GetByText(parts[^1]);
-            default:
-                return null;
         }
     }
 

@@ -38,13 +38,22 @@ public sealed class SyncCurrentUserProfileCommandHandler
 
         var user = await _db.Users
             .IgnoreQueryFilters()
+            .Include(u => u.Tenant)
             .FirstOrDefaultAsync(u => u.Id == userId, cancellationToken)
             ?? throw new NotFoundException(nameof(User), userId);
 
         var changed = false;
 
+        // Only fill the display name from the identity provider when the current one is still a
+        // placeholder (empty, equal to the email, or the synthetic JIT value). This heals freshly
+        // provisioned accounts without ever clobbering a name the user has explicitly chosen.
+        var currentNameIsPlaceholder =
+            string.IsNullOrWhiteSpace(user.DisplayName)
+            || user.DisplayName.Equals(user.Email, StringComparison.OrdinalIgnoreCase)
+            || user.DisplayName.EndsWith(SyntheticEmailSuffix, StringComparison.OrdinalIgnoreCase);
+
         var name = request.Name?.Trim();
-        if (!string.IsNullOrWhiteSpace(name) && user.DisplayName != name)
+        if (!string.IsNullOrWhiteSpace(name) && currentNameIsPlaceholder && user.DisplayName != name)
         {
             user.DisplayName = name;
             changed = true;

@@ -81,7 +81,12 @@ public sealed class Auth0ClaimsTransformer : IClaimsTransformation
             return principal;
         }
 
-        var user = await ResolveOrProvisionAsync(externalId, email, name);
+        // Auth0 Organizations: an org-scoped login carries these claims. When present they are the
+        // authoritative tenant; otherwise we fall back to grouping users by email domain.
+        var orgId = principal.FindFirstValue("org_id");
+        var orgName = principal.FindFirstValue("org_name");
+
+        var user = await ResolveOrProvisionAsync(externalId, email, name, orgId, orgName);
 
         identity.AddClaim(new Claim(TenantIdClaim, user.TenantId.ToString()));
         identity.AddClaim(new Claim(AppUserIdClaim, user.Id.ToString()));
@@ -94,7 +99,7 @@ public sealed class Auth0ClaimsTransformer : IClaimsTransformation
         return principal;
     }
 
-    private async Task<User> ResolveOrProvisionAsync(string externalId, string? email, string? name)
+    private async Task<User> ResolveOrProvisionAsync(string externalId, string? email, string? name, string? orgId = null, string? orgName = null)
     {
         // 1) Match an already-linked federated user by Auth0 subject.
         var user = await _db.Users
@@ -128,29 +133,69 @@ public sealed class Auth0ClaimsTransformer : IClaimsTransformation
             }
         }
 
-        // 3) JIT-provision a brand new user (and tenant, grouped by email domain).
+        // 3) JIT-provision a brand new user (and tenant).
         if (user is null)
         {
             // Fall back to a per-subject synthetic email when the token carries no email claim.
             var effectiveEmail = string.IsNullOrWhiteSpace(email)
                 ? $"{Sanitize(externalId)}@users.noreply"
                 : email;
-            var domain = effectiveEmail.Split('@').LastOrDefault()?.ToLowerInvariant() ?? "workspace";
 
-            var tenant = await _db.Tenants
-                .IgnoreQueryFilters()
-                .FirstOrDefaultAsync(t => t.ExternalDirectoryId == domain);
+            Tenant tenant;
+            bool firstUserOfTenant;
 
-            var firstUserOfTenant = tenant is null;
-            if (tenant is null)
+            if (!string.IsNullOrWhiteSpace(orgId))
             {
-                tenant = new Tenant
+                // Auth0 Organization login → the org is the tenant (one client = one Auth0 org).
+                var existing = await _db.Tenants
+                    .IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(t => t.ExternalDirectoryId == orgId);
+
+                firstUserOfTenant = existing is null;
+                if (existing is null)
                 {
-                    Name = ToTitle(domain),
-                    Slug = $"{Slugify(domain)}-{Guid.NewGuid().ToString("N")[..6]}",
-                    ExternalDirectoryId = domain,
-                };
-                _db.Tenants.Add(tenant);
+                    var label = string.IsNullOrWhiteSpace(orgName) ? orgId! : orgName!;
+                    tenant = new Tenant
+                    {
+                        Name = ToTitle(label),
+                        Slug = $"{Slugify(label)}-{Guid.NewGuid().ToString("N")[..6]}",
+                        ExternalDirectoryId = orgId,
+                        // Org name is set by the Auth0 admin — treat it as already named.
+                        IsOnboarded = true,
+                    };
+                    _db.Tenants.Add(tenant);
+                }
+                else
+                {
+                    tenant = existing;
+                }
+            }
+            else
+            {
+                // No organization context → group users into a tenant by email domain.
+                var domain = effectiveEmail.Split('@').LastOrDefault()?.ToLowerInvariant() ?? "workspace";
+
+                var existing = await _db.Tenants
+                    .IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(t => t.ExternalDirectoryId == domain);
+
+                firstUserOfTenant = existing is null;
+                if (existing is null)
+                {
+                    tenant = new Tenant
+                    {
+                        Name = DefaultWorkspaceName(domain, name, effectiveEmail),
+                        Slug = $"{Slugify(domain)}-{Guid.NewGuid().ToString("N")[..6]}",
+                        ExternalDirectoryId = domain,
+                        // Domain-derived name is only a guess → prompt the owner to name it.
+                        IsOnboarded = false,
+                    };
+                    _db.Tenants.Add(tenant);
+                }
+                else
+                {
+                    tenant = existing;
+                }
             }
 
             user = new User
@@ -242,6 +287,34 @@ public sealed class Auth0ClaimsTransformer : IClaimsTransformation
         return string.IsNullOrEmpty(root)
             ? "Workspace"
             : CultureInfo.InvariantCulture.TextInfo.ToTitleCase(root);
+    }
+
+    private static readonly HashSet<string> ConsumerDomains = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "users.noreply", "gmail.com", "googlemail.com", "outlook.com", "hotmail.com",
+        "live.com", "yahoo.com", "yahoo.co.in", "icloud.com", "me.com", "proton.me",
+        "protonmail.com", "aol.com", "gmx.com", "mail.com",
+    };
+
+    /// <summary>
+    /// A best-guess default workspace name used only until the owner completes onboarding.
+    /// For real company domains we title-case the domain (acme.com → "Acme"); for consumer or
+    /// synthetic domains we fall back to "{Name}'s Workspace" (never leaking "users.noreply").
+    /// </summary>
+    private static string DefaultWorkspaceName(string domain, string? name, string effectiveEmail)
+    {
+        if (!ConsumerDomains.Contains(domain))
+        {
+            return ToTitle(domain);
+        }
+
+        var person = !string.IsNullOrWhiteSpace(name)
+                     && !name!.EndsWith(SyntheticEmailSuffix, StringComparison.OrdinalIgnoreCase)
+                     && !string.Equals(name, effectiveEmail, StringComparison.OrdinalIgnoreCase)
+            ? name
+            : null;
+
+        return person is not null ? $"{person}'s Workspace" : "My Workspace";
     }
 
     private static string Slugify(string domain)

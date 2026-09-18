@@ -1,6 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
-import { Loader2 } from 'lucide-react';
 import { ProtectedRoute } from './components/ProtectedRoute';
+import { AppSplash } from './components/AppSplash';
 import { AppLayout } from './components/AppLayout';
 import { LoginPage } from './pages/LoginPage';
 import { DashboardPage } from './pages/DashboardPage';
@@ -14,6 +14,7 @@ import { AgentsPage } from './pages/AgentsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AiInsightsPage } from './pages/AiInsightsPage';
 import { AdministrationPage } from './pages/AdministrationPage';
+import { ProfilePage } from './pages/ProfilePage';
 
 export function App() {
   return (
@@ -49,6 +50,7 @@ export function App() {
         <Route path="/agents" element={<AgentsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/administration" element={<AdministrationPage />} />
+        <Route path="/profile" element={<ProfilePage />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />
@@ -58,9 +60,5 @@ export function App() {
 
 /** Shown briefly while the Auth0 SDK processes the redirect callback and navigates onward. */
 function AuthCallback() {
-  return (
-    <div className="flex h-screen items-center justify-center text-muted-foreground">
-      <Loader2 className="h-6 w-6 animate-spin" />
-    </div>
-  );
+  return <AppSplash message="Signing you in…" />;
 }

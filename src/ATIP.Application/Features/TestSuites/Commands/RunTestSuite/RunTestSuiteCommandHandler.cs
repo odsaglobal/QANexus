@@ -1,5 +1,6 @@
 using ATIP.Application.Common.Exceptions;
 using ATIP.Application.Common.Interfaces;
+using ATIP.Application.Common.Utilities;
 using ATIP.Application.Features.Explorer.Dtos;
 using ATIP.Domain.Entities;
 using MediatR;
@@ -45,6 +46,29 @@ public sealed class RunTestSuiteCommandHandler : IRequestHandler<RunTestSuiteCom
             ]);
         }
 
+        // Resolve the filter now so an impossible one fails fast with a clear message, rather than
+        // queueing a run that quietly executes nothing.
+        var filter = ScenarioRunFilter.Create(request.Tags, request.Types, request.Priorities, request.ScenarioIds);
+        var matchCount = suite.Scenarios.Count;
+        if (!filter.IsEmpty)
+        {
+            var scenarioIds = suite.Scenarios.Select(s => s.ScenarioId).ToList();
+            var facets = await _db.Scenarios
+                .Where(s => scenarioIds.Contains(s.Id))
+                .Select(s => new { s.Id, s.TagsJson, s.Type, s.Priority })
+                .ToListAsync(cancellationToken);
+
+            matchCount = facets.Count(f => filter.Matches(f.Id, f.TagsJson, f.Type, f.Priority));
+            if (matchCount == 0)
+            {
+                throw new ValidationException(
+                [
+                    new FluentValidation.Results.ValidationFailure(
+                        "Tags", $"No scenario in this suite matches {filter.Describe()}."),
+                ]);
+            }
+        }
+
         Domain.Entities.Environment? environment;
         if (request.EnvironmentId is { } envId)
         {
@@ -75,6 +99,7 @@ public sealed class RunTestSuiteCommandHandler : IRequestHandler<RunTestSuiteCom
             ProjectId = request.ProjectId,
             EnvironmentId = environment.Id,
             SuiteId = suite.Id,
+            RunFilterJson = filter.Serialize(),
             SeedUrl = environment.BaseUrl,
             MaxPages = 50,
             MaxDepth = 3,
@@ -85,7 +110,10 @@ public sealed class RunTestSuiteCommandHandler : IRequestHandler<RunTestSuiteCom
 
         await _queue.EnqueueAsync(session.Id, cancellationToken);
 
-        await _audit.LogAsync("suite.run", "Suite", $"Ran suite \"{suite.Name}\" ({suite.Scenarios.Count} scenarios)", nameof(TestSuite), suite.Id, cancellationToken);
+        var scope = filter.IsEmpty
+            ? $"{suite.Scenarios.Count} scenarios"
+            : $"{matchCount} of {suite.Scenarios.Count} scenarios — {filter.Describe()}";
+        await _audit.LogAsync("suite.run", "Suite", $"Ran suite \"{suite.Name}\" ({scope})", nameof(TestSuite), suite.Id, cancellationToken);
 
         return ExplorationSessionDto.FromEntity(session);
     }

@@ -31,6 +31,13 @@ public class ExplorationSession : AuditableEntity, ITenantScoped, ISoftDeletable
     public Guid? SuiteId { get; set; }
 
     /// <summary>
+    /// Optional filter for a suite run, as a serialized ScenarioRunFilter (tags, types, priorities).
+    /// When set, only the suite's matching scenarios are executed. Persisted on the session rather
+    /// than resolved up front because the run happens later, on a background worker.
+    /// </summary>
+    public string? RunFilterJson { get; set; }
+
+    /// <summary>
     /// Optional free-text mission. When set, the Explorer Agent autonomously performs the described
     /// flow (deciding each browser action itself) and records what it did as a new reusable scenario.
     /// </summary>

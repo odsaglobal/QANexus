@@ -1,6 +1,7 @@
 import axios, { AxiosError } from 'axios';
 import type { ProblemDetails } from '../api/types';
 import { useAuthStore } from '../store/authStore';
+import { handleSessionExpired } from './authActions';
 
 /**
  * Single axios instance for the whole app. A request interceptor attaches the Auth0 access token
@@ -25,6 +26,9 @@ apiClient.interceptors.response.use(
   (error: AxiosError<ProblemDetails>) => {
     if (error.response?.status === 401) {
       useAuthStore.getState().clear();
+      // Token is missing/expired/rejected → end the Auth0 session and go to /login
+      // instead of silently rendering a half-authenticated shell.
+      handleSessionExpired();
     }
     return Promise.reject(error);
   },

@@ -9,7 +9,8 @@ import { Badge } from '../../components/ui/badge';
 import { Alert } from '../../components/ui/alert';
 import { Textarea } from '../../components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../components/ui/dialog';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/card';
+import { Card, CardContent } from '../../components/ui/card';
+import { PageHeader } from '../../components/PageHeader';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
 import { useConfirm } from '../../components/ui/confirm-dialog';
 
@@ -48,27 +49,22 @@ export function RequirementsTab({ projectId }: { projectId: string }) {
 
   return (
     <div className="space-y-4">
+      <PageHeader
+        title="Business Context"
+        description="Upload domain documents (Markdown, text, PDF, DOCX). The AI reads them while exploring your app and when generating test cases — so it understands your terminology and rules."
+        actions={(
+          <Button variant="outline" size="sm" asChild>
+            <label className="cursor-pointer">
+              {uploadMutation.isPending ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Upload className="h-4 w-4 mr-1.5" />}
+              Upload document
+              <input type="file" hidden accept=".md,.markdown,.txt,.pdf,.docx,.json,.yaml,.yml" onChange={handleFile} />
+            </label>
+          </Button>
+        )}
+      />
       <Card>
-        <CardHeader className="pb-3">
-          <div className="flex items-start justify-between">
-            <div>
-              <CardTitle>Business Context</CardTitle>
-              <CardDescription>
-                Upload domain documents (Markdown, text, PDF, DOCX). The AI reads them while exploring your app and
-                when generating test cases — so it understands your terminology and rules.
-              </CardDescription>
-            </div>
-            <Button variant="outline" size="sm" asChild>
-              <label className="cursor-pointer">
-                {uploadMutation.isPending ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Upload className="h-4 w-4 mr-1.5" />}
-                Upload document
-                <input type="file" hidden accept=".md,.markdown,.txt,.pdf,.docx,.json,.yaml,.yml" onChange={handleFile} />
-              </label>
-            </Button>
-          </div>
-        </CardHeader>
         <CardContent className="p-0">
-          {error && <div className="px-6 pb-3"><Alert severity="error" className="text-sm">{error}</Alert></div>}
+          {error && <div className="px-6 pb-3 pt-4"><Alert severity="error" className="text-sm">{error}</Alert></div>}
           <Table>
             <TableHeader>
               <TableRow>

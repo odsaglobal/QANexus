@@ -1,9 +1,23 @@
 import { apiClient } from '../lib/apiClient';
-import type { ExplorationSession, JiraIssue, KnowledgeGraph, Scenario, ScenarioRun } from './types';
+import type {
+  ExplorationSession,
+  JiraIssue,
+  KnowledgeGraph,
+  Scenario,
+  ScenarioRun,
+  TestPlatform,
+} from './types';
 
 export interface UpdateScenarioStepInput {
   action: string;
   expectedResult?: string;
+  /** Defaults to Web when omitted. */
+  platform?: TestPlatform;
+  /** Engine verb for an authored (non-recorded) step, e.g. 'request' or 'query'. Required for non-Web steps. */
+  kind?: string;
+  target?: string;
+  value?: string;
+  options?: Record<string, string | null>;
 }
 
 export interface UpdateScenarioPayload {
@@ -16,6 +30,7 @@ export interface UpdateScenarioPayload {
   expectedResult?: string;
   jiraKey?: string;
   tags?: string[];
+  autoHealEnabled?: boolean;
   steps: UpdateScenarioStepInput[];
 }
 
@@ -85,22 +100,70 @@ export async function generateScenariosFromStory(
   return data;
 }
 
+export type ImportSuiteMode = 'None' | 'Existing' | 'New';
+
+export interface ImportSuiteOptions {
+  mode: ImportSuiteMode;
+  /** Required when mode is 'Existing'. */
+  suiteId?: string;
+  /** Required when mode is 'New'. */
+  newSuiteName?: string;
+}
+
+export interface ImportScenariosResult {
+  scenarios: Scenario[];
+  suiteId: string | null;
+  suiteName: string | null;
+  suiteCreated: boolean;
+}
+
 export async function importScenariosFromFile(
   projectId: string,
   featureId: string,
   file: File,
-): Promise<Scenario[]> {
+  suite: ImportSuiteOptions = { mode: 'None' },
+): Promise<ImportScenariosResult> {
   const form = new FormData();
   form.append('featureId', featureId);
   form.append('file', file);
+  form.append('suiteMode', suite.mode);
+  if (suite.mode === 'Existing' && suite.suiteId) {
+    form.append('suiteId', suite.suiteId);
+  }
+  if (suite.mode === 'New' && suite.newSuiteName) {
+    form.append('newSuiteName', suite.newSuiteName);
+  }
 
-  const { data } = await apiClient.post<Scenario[]>(
+  const { data } = await apiClient.post<ImportScenariosResult>(
     `/projects/${projectId}/scenarios/import`,
     form,
     { headers: { 'Content-Type': 'multipart/form-data' } },
   );
 
   return data;
+}
+
+/**
+ * Downloads the .xlsx import template and hands it to the browser as a file save.
+ * Fetched through apiClient so the request carries auth, then released as an object URL.
+ */
+export async function downloadImportTemplate(projectId: string): Promise<void> {
+  const { data } = await apiClient.get<Blob>(
+    `/projects/${projectId}/scenarios/import-template`,
+    { responseType: 'blob' },
+  );
+
+  const url = URL.createObjectURL(data);
+  try {
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'atip-test-case-import-template.xlsx';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 export async function syncTestRailScenarios(payload: SyncTestRailPayload): Promise<Scenario[]> {
@@ -134,6 +197,15 @@ export async function updateScenario(
 
 export async function deleteScenario(projectId: string, id: string): Promise<void> {
   await apiClient.delete(`/projects/${projectId}/scenarios/${id}`);
+}
+
+/** Bulk soft-delete. POST, not DELETE, because the ids travel in the body. Returns how many were removed. */
+export async function deleteScenarios(projectId: string, ids: string[]): Promise<number> {
+  const { data } = await apiClient.post<{ deleted: number }>(
+    `/projects/${projectId}/scenarios/bulk-delete`,
+    { projectId, ids },
+  );
+  return data.deleted;
 }
 
 export async function exploreScenario(

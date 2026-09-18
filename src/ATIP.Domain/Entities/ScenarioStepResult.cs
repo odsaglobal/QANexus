@@ -28,6 +28,20 @@ public class ScenarioStepResult : AuditableEntity, ITenantScoped
     /// <summary>Human-readable detail of what happened (interpreted action, healing, or failure reason).</summary>
     public string? Detail { get; set; }
 
+    /// <summary>
+    /// Per-assertion breakdown as JSON, when the step's expected result had been compiled into
+    /// machine-checkable assertions. Lets the report show each condition with its own verdict and the
+    /// concrete value observed, instead of one sentence for the whole step. Null for steps verified
+    /// the older way, which still render from <see cref="Detail"/>.
+    /// </summary>
+    public string? ChecksJson { get; set; }
+
     /// <summary>URL the page was on when the step executed.</summary>
     public string? Url { get; set; }
+
+    /// <summary>
+    /// Relative storage path (served via <c>/api/v1/files/{path}</c>) to a screenshot taken right after
+    /// this step executed — visual evidence for the Executions "View" detail. Null if capture failed.
+    /// </summary>
+    public string? ScreenshotPath { get; set; }
 }
