@@ -1,5 +1,5 @@
+using ATIP.Api.Services;
 using ATIP.Application.Common.Interfaces;
-using ATIP.Infrastructure.Identity;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
@@ -65,7 +65,7 @@ public sealed class ExplorationHub : Hub
 
     private Guid? GetTenantId()
     {
-        var raw = Context.User?.FindFirst(JwtTokenService.TenantIdClaim)?.Value;
+        var raw = Context.User?.FindFirst(Auth0ClaimsTransformer.TenantIdClaim)?.Value;
         return Guid.TryParse(raw, out var id) ? id : null;
     }
 }

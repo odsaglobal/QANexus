@@ -2,9 +2,10 @@ namespace ATIP.Infrastructure.Configuration;
 
 /// <summary>
 /// Configuration for the LLM adapter, bound from section "Llm" (and the legacy alias "LlmResolver").
-/// Supports OpenAI-compatible endpoints and Azure OpenAI deployment URLs.
-/// When <see cref="BaseUrl"/>/<see cref="Endpoint"/> or <see cref="ApiKey"/> is empty the adapter runs a
-/// deterministic offline mock instead.
+/// Supports any OpenAI-compatible chat-completions endpoint (OpenAI, Azure OpenAI, LiteLLM, Groq,
+/// OpenRouter, local servers such as LM Studio/Ollama/vLLM) plus Anthropic's native Messages API.
+/// When neither an endpoint nor an API key is configured, <see cref="ILlmClient.CompleteAsync"/> throws
+/// <c>LlmUnavailableException</c> rather than silently falling back to mock data.
 /// </summary>
 public sealed class LlmOptions
 {
@@ -49,9 +50,15 @@ public sealed class LlmOptions
 
     public bool EnableAriaTree { get; set; } = true;
 
-    /// <summary>True when a real endpoint is configured.</summary>
-    public bool IsConfigured => !string.IsNullOrWhiteSpace(ApiKey)
-        && (!string.IsNullOrWhiteSpace(Endpoint) || !string.IsNullOrWhiteSpace(BaseUrl) || IsAnthropic);
+    /// <summary>
+    /// True when a real endpoint is configured. An API key is required for hosted providers (OpenAI,
+    /// Azure, Anthropic — inferred from <see cref="Provider"/>/endpoint), but many self-hosted
+    /// OpenAI-compatible servers (LM Studio, Ollama, vLLM, text-generation-webui) accept requests with no
+    /// key at all, so an endpoint alone is sufficient for those.
+    /// </summary>
+    public bool IsConfigured => IsAnthropic
+        ? !string.IsNullOrWhiteSpace(ApiKey)
+        : !string.IsNullOrWhiteSpace(Endpoint) || !string.IsNullOrWhiteSpace(BaseUrl);
 
     /// <summary>True when the configured endpoint targets Azure OpenAI.</summary>
     public bool IsAzure => string.Equals(Provider, "azure", StringComparison.OrdinalIgnoreCase)

@@ -63,24 +63,32 @@ public sealed class LlmClient : ILlmClient
     {
         var client = _httpClientFactory.CreateClient(HttpClientName);
 
-        object request = _options.IsAnthropic
-            ? BuildAnthropicRequest(systemPrompt, userPrompt, jsonMode)
-            : new ChatCompletionRequest
-            {
-                Model = _options.Model,
-                Temperature = _options.Temperature,
-                ResponseFormat = jsonMode ? new ResponseFormat { Type = "json_object" } : null,
-                Messages =
-                [
-                    new ChatMessage { Role = "system", Content = systemPrompt },
-                    new ChatMessage { Role = "user", Content = userPrompt },
-                ],
-            };
+        // Whether to ask for strict JSON via response_format. Not every OpenAI-compatible server honors
+        // (or even accepts) this field — some older/local builds (llama.cpp server, some LM Studio/Ollama
+        // versions) 400 on it outright. Dropped for exactly ONE retry below if that happens; the prompts
+        // already instruct "respond with JSON only" and JsonExtraction tolerates the rest.
+        var includeResponseFormat = jsonMode && !_options.IsAnthropic;
+        var droppedResponseFormat = false;
 
         var maxAttempts = Math.Max(1, _options.MaxRetries);
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            object request = _options.IsAnthropic
+                ? BuildAnthropicRequest(systemPrompt, userPrompt, jsonMode)
+                : new ChatCompletionRequest
+                {
+                    Model = _options.Model,
+                    Temperature = _options.Temperature,
+                    ResponseFormat = includeResponseFormat ? new ResponseFormat { Type = "json_object" } : null,
+                    Messages =
+                    [
+                        new ChatMessage { Role = "system", Content = systemPrompt },
+                        new ChatMessage { Role = "user", Content = userPrompt },
+                    ],
+                };
+
             try
             {
                 using var response = await client.PostAsJsonAsync(_options.ChatCompletionsUrl, request, Json, cancellationToken);
@@ -101,6 +109,18 @@ public sealed class LlmClient : ILlmClient
                             "LLM call to {Endpoint} failed with {StatusCode} (attempt {Attempt}/{Max}); retrying: {Detail}",
                             _options.ChatCompletionsUrl, (int)response.StatusCode, attempt, maxAttempts, detail);
                         await DelayBeforeRetryAsync(attempt, response.Headers.RetryAfter?.Delta, cancellationToken);
+                        continue;
+                    }
+
+                    if (includeResponseFormat && !droppedResponseFormat && (int)response.StatusCode == 400
+                        && detail.Contains("response_format", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger.LogWarning(
+                            "LLM endpoint {Endpoint} rejected response_format (model/server likely doesn't " +
+                            "support it); retrying once as a plain completion.", _options.ChatCompletionsUrl);
+                        includeResponseFormat = false;
+                        droppedResponseFormat = true;
+                        maxAttempts++; // guarantee this fallback gets its own attempt regardless of MaxRetries
                         continue;
                     }
 

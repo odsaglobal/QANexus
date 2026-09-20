@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -71,6 +72,66 @@ public class LlmClientJsonParsingTests
         var result = await client.CompleteAsync("system", "user");
 
         result.Should().Be("{\"summary\":\"ok\"}");
+    }
+
+    [Fact]
+    public async Task Retries_without_response_format_when_local_server_rejects_it()
+    {
+        // Simulates an OpenAI-compatible local server (older llama.cpp/LM Studio build) that 400s on an
+        // unrecognized "response_format" field. The client must drop it and retry as a plain completion
+        // instead of failing the whole call.
+        var handler = new SequencedHttpMessageHandler(
+            new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent(
+                    """{"error":{"message":"Unrecognized request argument supplied: response_format"}}""",
+                    Encoding.UTF8, "application/json"),
+            },
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """
+                    {
+                      "choices": [
+                        { "message": { "role": "assistant", "content": "{\"summary\":\"ok\"}" } }
+                      ]
+                    }
+                    """, Encoding.UTF8, "application/json"),
+            });
+
+        var factory = new StubHttpClientFactory(handler);
+        var options = Options.Create(new LlmOptions
+        {
+            Provider = "openai",
+            BaseUrl = "http://localhost:1234/v1",
+            Model = "local-model",
+            TimeoutMs = 10000,
+        });
+
+        var client = new LlmClient(factory, options, NullLogger<LlmClient>.Instance);
+
+        var result = await client.CompleteAsync("system", "user");
+
+        result.Should().Be("{\"summary\":\"ok\"}");
+        handler.RequestCount.Should().Be(2);
+    }
+
+    private sealed class SequencedHttpMessageHandler : HttpMessageHandler
+    {
+        private readonly Queue<HttpResponseMessage> _responses;
+
+        public int RequestCount { get; private set; }
+
+        public SequencedHttpMessageHandler(params HttpResponseMessage[] responses)
+        {
+            _responses = new Queue<HttpResponseMessage>(responses);
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            return Task.FromResult(_responses.Count > 0 ? _responses.Dequeue() : new HttpResponseMessage(HttpStatusCode.InternalServerError));
+        }
     }
 
     private sealed class StubHttpClientFactory : IHttpClientFactory

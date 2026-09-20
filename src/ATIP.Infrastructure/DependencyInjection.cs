@@ -5,7 +5,6 @@ using ATIP.Infrastructure.Common;
 using ATIP.Infrastructure.Configuration;
 using ATIP.Infrastructure.Documents;
 using ATIP.Infrastructure.Exploration;
-using ATIP.Infrastructure.Identity;
 using ATIP.Infrastructure.Persistence;
 using ATIP.Infrastructure.Persistence.Interceptors;
 using ATIP.Infrastructure.Security;
@@ -23,10 +22,6 @@ public static class DependencyInjection
         this IServiceCollection services,
         IConfiguration configuration)
     {
-        services.AddOptions<JwtOptions>()
-            .Bind(configuration.GetSection(JwtOptions.SectionName))
-            .ValidateOnStart();
-
         services.AddOptions<EncryptionOptions>()
             .Bind(configuration.GetSection(EncryptionOptions.SectionName))
             .ValidateOnStart();
@@ -65,8 +60,6 @@ public static class DependencyInjection
         services.AddScoped<IAuditLogger, Audit.AuditLogger>();
         services.AddScoped<INotificationService, Notifications.NotificationService>();
 
-        services.AddScoped<IPasswordHasher, BcryptPasswordHasher>();
-        services.AddScoped<IJwtTokenService, JwtTokenService>();
         services.AddSingleton<ISecretProtector, AesGcmSecretProtector>();
 
         // AI, documents and storage.
