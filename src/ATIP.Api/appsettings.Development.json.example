@@ -1,0 +1,32 @@
+{
+  "Encryption": {
+    "ActiveKeyId": "default",
+    "Keys": {
+      "default": "<base64-32-byte-key>"
+    }
+  },
+  "Llm": {
+    "Provider": "openai",
+    "Endpoint": "https://api.openai.com/v1/chat/completions",
+    "ApiKey": "sk-...",
+    "Model": "gpt-4o-mini",
+    "TimeoutMs": 120000,
+    "MaxSelectors": 5,
+    "EnableVision": false,
+    "EnableAriaTree": true
+  },
+  "PlaywrightMcp": {
+    "Enabled": true,
+    "Command": "/absolute/path/to/QANexus/tools/mcp/playwright-mcp.sh",
+    "Arguments": [ "--headless", "--isolated", "--browser", "chromium" ]
+  },
+  "Exploration": {
+    "MaxParallelSessions": 4,
+    "MaxSessionMinutes": 20
+  },
+  "TestRail": {
+    "BaseUrl": "",
+    "Username": "",
+    "ApiKey": ""
+  }
+}
