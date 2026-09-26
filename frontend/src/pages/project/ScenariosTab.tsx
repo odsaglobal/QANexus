@@ -3,10 +3,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Sparkles, Edit2, Loader2, FileUp, Plus, Compass, Search,
   CheckCircle2, XCircle, Wrench, MinusCircle, Play, FileText, FileWarning, Layers,
-  Trash2, Pencil, RefreshCw, Square, Radio, Check, X,
+  Trash2, Pencil, RefreshCw, Square, Radio, Check, X, AlertTriangle, ShieldCheck,
 } from 'lucide-react';
 import type { Scenario, TestSuite, StepRunStatus, ExplorationSession, StepCheckResult } from '../../api/types';
-import { generateScenariosFromStory, listScenarios, exploreScenario, runScenario, getLatestScenarioRun, deleteScenario, deleteScenarios } from '../../api/scenarios';
+import {
+  generateScenariosFromStory, listScenarios, exploreScenario, runScenario, getLatestScenarioRun,
+  deleteScenario, deleteScenarios, applyProposedSteps, discardProposedSteps,
+} from '../../api/scenarios';
 import { cancelExploration, listExplorationSessions } from '../../api/explorer';
 import {
   createTestSuite, deleteTestSuite, listTestSuites, runTestSuite, updateTestSuite,
@@ -886,6 +889,22 @@ function ScenarioDetailPanel({ projectId, scenario, activeSession }: {
     onError: (e) => setRunError(getErrorMessage(e)),
   });
 
+  const applyProposedMutation = useMutation({
+    mutationFn: () => applyProposedSteps(projectId, scenario.id),
+    onSuccess: () => {
+      setRunError(null);
+      queryClient.invalidateQueries({ queryKey: ['scenarios', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['scenario-run', projectId, scenario.id] });
+    },
+    onError: (e) => setRunError(getErrorMessage(e)),
+  });
+  const discardProposedMutation = useMutation({
+    mutationFn: () => discardProposedSteps(projectId, scenario.id),
+    onSuccess: () => { setRunError(null); queryClient.invalidateQueries({ queryKey: ['scenarios', projectId] }); },
+    onError: (e) => setRunError(getErrorMessage(e)),
+  });
+  const proposedSteps = scenario.proposedSteps ?? [];
+
   const busy = running || exploreMutation.isPending || runMutation.isPending;
 
   const outcomeVariant = run
@@ -969,6 +988,44 @@ function ScenarioDetailPanel({ projectId, scenario, activeSession }: {
           <p className="text-xs text-muted-foreground">
             <strong>Preconditions:</strong> {scenario.preconditions}
           </p>
+        )}
+
+        {proposedSteps.length > 0 && (
+          <div className="rounded-lg border border-violet-200 bg-violet-50 p-3 space-y-2">
+            <div className="flex items-center gap-2 text-sm font-semibold text-violet-800">
+              <AlertTriangle className="h-4 w-4" />
+              Actual steps found while exploring ({proposedSteps.length})
+            </div>
+            <p className="text-xs text-violet-700">
+              These are the real browser actions the AI performed just now. Accept them to replace the steps
+              below with the grounded, replayable version — your current steps are backed up and can be reverted.
+            </p>
+            <ol className="text-xs text-foreground space-y-1.5 list-decimal pl-5">
+              {proposedSteps.map((s, i) => (
+                <li key={i}>
+                  <div>{s.action}</div>
+                  {s.expectedResult && (
+                    <div className="mt-1 flex items-start gap-1.5 rounded-md border border-sky-200 bg-sky-50 px-2 py-1 text-sky-900">
+                      <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-sky-600 mt-px" />
+                      <span>
+                        <span className="font-semibold uppercase tracking-wide text-[10px] text-sky-700 mr-1.5">Validate</span>
+                        {s.expectedResult}
+                      </span>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ol>
+            <div className="flex items-center gap-2 pt-1">
+              <Button type="button" size="sm" disabled={applyProposedMutation.isPending} onClick={() => applyProposedMutation.mutate()}>
+                {applyProposedMutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
+                Accept actual steps
+              </Button>
+              <Button type="button" variant="outline" size="sm" disabled={discardProposedMutation.isPending} onClick={() => discardProposedMutation.mutate()}>
+                Discard
+              </Button>
+            </div>
+          </div>
         )}
 
         <div>
