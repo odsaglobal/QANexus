@@ -79,7 +79,18 @@ Key backend building blocks:
 
 ## Getting started
 
-### 1. Start PostgreSQL
+### 1. Start PostgreSQL and apply migrations
+
+The easiest path is the setup script, which starts Postgres, waits for it to be
+ready, and applies all EF Core migrations in one step:
+
+```bash
+tools/db/setup-db.sh            # Docker Postgres (docker-compose.yml), port 5433
+tools/db/setup-db.sh --local    # use an existing local PostgreSQL install, port 5432
+tools/db/setup-db.sh --reset    # drop and rebuild the database first
+```
+
+Or do it manually:
 
 **Option A — Docker (recommended for a clean environment):**
 
@@ -95,6 +106,9 @@ docker compose up -d
 psql postgres -c "CREATE ROLE atip LOGIN PASSWORD 'atip';"
 psql postgres -c "CREATE DATABASE atip OWNER atip;"
 ```
+
+Either way, EF Core migrations are also applied automatically the first time you
+run the API (step 4), so the script is a convenience, not a requirement.
 
 ### 2. Install Playwright browsers (backend automation engine)
 
@@ -269,6 +283,8 @@ dotnet test
 
 ## Useful scripts (`tools/`)
 
+- `tools/db/setup-db.sh` — provisions Postgres (Docker or local) and applies EF Core migrations
+  in one step; see step 1 of Getting started.
 - `tools/mcp/` — the local Playwright MCP server the exploration engine spawns as a subprocess.
   `playwright-mcp.sh` is the wrapper script referenced by `PlaywrightMcp:Command` in appsettings.
 - `tools/e2e/run-all.py <projectId> <envId>` — bulk explore + replay every scenario in a project,
