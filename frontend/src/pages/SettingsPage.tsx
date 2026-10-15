@@ -18,7 +18,7 @@ interface Preferences {
 const storageKey = 'atip.settings.preferences';
 
 const defaultPrefs: Preferences = {
-  orgName: 'ATiP Organization',
+  orgName: 'Patterns.ai Organization',
   defaultEnvironment: 'QA',
   notifyOnFailure: true,
   autoHealLocators: true,

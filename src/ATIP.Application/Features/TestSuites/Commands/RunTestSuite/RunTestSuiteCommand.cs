@@ -34,5 +34,12 @@ public sealed record RunTestSuiteCommand : IRequest<ExplorationSessionDto>, IPro
     /// </summary>
     public IReadOnlyList<Guid>? ScenarioIds { get; init; }
 
+    /// <summary>
+    /// True (the default) replays each scenario's already-recorded steps deterministically — the same
+    /// engine a single scenario's "Run" uses, with zero MCP subprocess and zero LLM tokens. False runs
+    /// the AI/MCP goal-driven exploration instead, the same as a single scenario's "Explore".
+    /// </summary>
+    public bool ExecuteSavedSteps { get; init; } = true;
+
     public ProjectRole RequiredRole => ProjectRole.Editor;
 }

@@ -104,6 +104,7 @@ public sealed class TestSuitesController : ApiControllerBase
             Types = body?.Types,
             Priorities = body?.Priorities,
             ScenarioIds = body?.ScenarioIds,
+            ExecuteSavedSteps = body?.ExecuteSavedSteps ?? true,
         }, cancellationToken);
         return Accepted(result);
     }
@@ -123,4 +124,10 @@ public sealed record RunTestSuiteRequest
 
     /// <summary>Explicitly checked scenarios; AND-ed with the facets. Empty means "every match".</summary>
     public IReadOnlyList<Guid>? ScenarioIds { get; init; }
+
+    /// <summary>
+    /// True (the default) replays each scenario's recorded steps deterministically, like a single
+    /// scenario's "Run". False drives the AI/MCP goal-based exploration instead, like "Explore".
+    /// </summary>
+    public bool? ExecuteSavedSteps { get; init; }
 }

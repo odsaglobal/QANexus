@@ -210,3 +210,24 @@
   animation: pulse-ring 2s cubic-bezier(0.455, 0.03, 0.515, 0.955) infinite;
 }
 
+/* A default OS scrollbar reads as broken layout on a dark, decorative panel — this is the
+   fallback for short viewports where the auth brand panel's content doesn't fully fit, so it
+   should look intentional rather than like an accident. */
+.scrollbar-on-dark {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+.scrollbar-on-dark::-webkit-scrollbar {
+  width: 6px;
+}
+.scrollbar-on-dark::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-on-dark::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.25);
+  border-radius: 3px;
+}
+.scrollbar-on-dark::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.4);
+}
+

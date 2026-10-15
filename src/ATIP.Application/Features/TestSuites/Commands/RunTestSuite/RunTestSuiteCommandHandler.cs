@@ -103,6 +103,7 @@ public sealed class RunTestSuiteCommandHandler : IRequestHandler<RunTestSuiteCom
             SeedUrl = environment.BaseUrl,
             MaxPages = 50,
             MaxDepth = 3,
+            ExecuteSavedSteps = request.ExecuteSavedSteps,
         };
 
         _db.ExplorationSessions.Add(session);

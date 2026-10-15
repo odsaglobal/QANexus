@@ -40,6 +40,7 @@ public sealed class ExplorerAgent : IExplorerAgent
     private readonly PlaywrightMcpOptions _mcp;
     private readonly ITestEngine _engine;
     private readonly WebBrowserSession _browserSession;
+    private readonly ILocatorRepository _locatorRepository;
     private readonly ILogger<ExplorerAgent> _logger;
 
     /// <summary>
@@ -77,6 +78,7 @@ public sealed class ExplorerAgent : IExplorerAgent
         Microsoft.Extensions.Options.IOptions<PlaywrightMcpOptions> mcpOptions,
         ITestEngine engine,
         WebBrowserSession browserSession,
+        ILocatorRepository locatorRepository,
         ILogger<ExplorerAgent> logger)
     {
         _db = db;
@@ -87,6 +89,7 @@ public sealed class ExplorerAgent : IExplorerAgent
         _mcp = mcpOptions.Value;
         _engine = engine;
         _browserSession = browserSession;
+        _locatorRepository = locatorRepository;
         _logger = logger;
     }
 
@@ -974,6 +977,35 @@ public sealed class ExplorerAgent : IExplorerAgent
                     // shouldn't be suggested back to the user as real, reproducible steps.
                     if (hadEffect)
                     {
+                        // Seed the object repository with a durable locator (role+name, read straight off
+                        // the MCP snapshot's ARIA data for the ref the agent acted on) instead of leaving
+                        // the step with only its human descriptor. Without this, the first deterministic
+                        // Run has no stable identity to start from and must re-derive the element from
+                        // scratch by probing a whole ladder of guesses — this pins the one that actually
+                        // resolved, so a later Run's very first replay finds it directly.
+                        string? elementKey = null;
+                        if (action is "click" or "type" or "select" && !string.IsNullOrWhiteSpace(decision.Ref))
+                        {
+                            var roleAndName = ExtractRoleAndName(snapshot, decision.Ref!);
+                            if (roleAndName is { } located)
+                            {
+                                elementKey = SlugForElementKey(decision.Target ?? located.Name);
+                                if (elementKey is not null)
+                                {
+                                    await _locatorRepository.UpsertLocatorAsync(
+                                        session.TenantId,
+                                        session.ProjectId,
+                                        elementKey,
+                                        decision.Target ?? located.Name,
+                                        TestPlatform.Web,
+                                        LocatorStrategy.Role,
+                                        $"{located.Role}:{located.Name}",
+                                        LocatorOrigin.Discovered,
+                                        ct);
+                                }
+                            }
+                        }
+
                         // Capture the CONCRETE action alongside the human description so that applying
                         // these steps yields a deterministically replayable script — a later RUN can then
                         // execute it with plain Playwright, with no MCP server and no AI tokens.
@@ -984,6 +1016,7 @@ public sealed class ExplorerAgent : IExplorerAgent
                                 Kind = action!,
                                 Target = action == "navigate" ? mcp.CurrentUrl : decision.Target,
                                 Value = decision.Value,
+                                ElementKey = elementKey,
                             },
                         ]);
 
@@ -1763,6 +1796,68 @@ public sealed class ExplorerAgent : IExplorerAgent
         var dropped = relevant.Count + primary.Count + secondary.Count - kept;
         sb.AppendLine($"… (snapshot trimmed to {kept} elements most relevant to this step; {dropped} lower-value element(s) omitted)");
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Reads the accessible role and name MCP reported for a ref (e.g. <c>- button "LOGIN" [ref=e12]</c>)
+    /// out of the snapshot the agent chose it from. This is what lets a click recorded during MCP
+    /// exploration be seeded with a durable locator (role+name) instead of only the human descriptor —
+    /// the same accessible role/name a plain Playwright run resolves elements by.
+    /// </summary>
+    private static (string Role, string Name)? ExtractRoleAndName(string snapshot, string reference)
+    {
+        var refToken = System.Text.RegularExpressions.Regex.Match(reference, "e\\d+");
+        if (!refToken.Success)
+        {
+            return null;
+        }
+
+        var match = System.Text.RegularExpressions.Regex.Match(
+            snapshot,
+            $"-\\s*([a-zA-Z][a-zA-Z0-9]*)\\s+\"([^\"]*)\"[^\\r\\n]*\\[ref={System.Text.RegularExpressions.Regex.Escape(refToken.Value)}\\]");
+
+        if (!match.Success)
+        {
+            return null;
+        }
+
+        var role = match.Groups[1].Value;
+        var name = match.Groups[2].Value.Trim();
+        return string.IsNullOrWhiteSpace(name) ? null : (role, name);
+    }
+
+    /// <summary>
+    /// Turns a human descriptor into the stable, storage-safe key the object repository indexes
+    /// locators by. Deliberately not scenario-scoped: the same "LOGIN" button seen from two different
+    /// scenarios is the same element, and a shared key is what lets either scenario's run teach the
+    /// other where it lives.
+    /// </summary>
+    private static string? SlugForElementKey(string? descriptor)
+    {
+        if (string.IsNullOrWhiteSpace(descriptor))
+        {
+            return null;
+        }
+
+        var slug = new string(descriptor
+            .Trim()
+            .ToLowerInvariant()
+            .Select(c => char.IsLetterOrDigit(c) ? c : '-')
+            .ToArray());
+
+        while (slug.Contains("--", StringComparison.Ordinal))
+        {
+            slug = slug.Replace("--", "-", StringComparison.Ordinal);
+        }
+
+        slug = slug.Trim('-');
+
+        return slug.Length switch
+        {
+            0 => null,
+            > 120 => slug[..120].TrimEnd('-'),
+            _ => slug
+        };
     }
 
     /// <summary>Broadcasts a single scenario step's result to the tenant's live-view group as it executes.</summary>

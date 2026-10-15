@@ -1,15 +1,18 @@
 {
+  "ConnectionStrings": {
+    "Postgres": "Host=patternsazpostgressql.postgres.database.azure.com;Port=5432;Database=postgres;Username=patternsaidbadmin;Password=~qObx3^8OTw7;SSL Mode=Require;Trust Server Certificate=true;Search Path=patternsaiautomation"
+  },
   "Encryption": {
     "ActiveKeyId": "default",
     "Keys": {
-      "default": "<base64-32-byte-key>"
+      "default": "L1lggEZXTUrJJ3l5TiERhkDJNte8LQ/ppzi0bRQnO/c="
     }
   },
   "Llm": {
-    "Provider": "openai",
-    "Endpoint": "https://api.openai.com/v1/chat/completions",
-    "ApiKey": "sk-...",
-    "Model": "gpt-4o-mini",
+    "Provider": "azure",
+    "Endpoint": "https://patternsazopenai.openai.azure.com/openai/deployments/patternsai-gpt-4.1/chat/completions?api-version=2025-04-01-preview",
+    "ApiKey": "<your-azure-openai-key>",
+    "Model": "gpt-4o",
     "TimeoutMs": 120000,
     "MaxSelectors": 5,
     "EnableVision": false,
@@ -17,16 +20,16 @@
   },
   "PlaywrightMcp": {
     "Enabled": true,
-    "Command": "/absolute/path/to/QANexus/tools/mcp/playwright-mcp.sh",
-    "Arguments": [ "--headless", "--isolated", "--browser", "chromium" ]
+    "Command": "node",
+    "Arguments": [ "E:/PatternsAIAutomation/QANexus/tools/mcp/node_modules/@playwright/mcp/cli.js", "--headless", "--isolated", "--browser", "chromium", "--ignore-https-errors" ]
   },
   "Exploration": {
     "MaxParallelSessions": 4,
     "MaxSessionMinutes": 20
   },
   "TestRail": {
-    "BaseUrl": "",
-    "Username": "",
-    "ApiKey": ""
+    "BaseUrl": "https://assertone.testrail.io",
+    "Username": "assertone2026@gmail.com",
+    "ApiKey": "<your-azure-openai-key>"
   }
 }

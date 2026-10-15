@@ -124,7 +124,7 @@ public sealed class ScenariosController : ApiControllerBase
     public async Task<ActionResult<ImportScenariosResult>> Import(
         Guid projectId,
         [FromForm] Guid featureId,
-        [FromForm] IFormFile file,
+        IFormFile file,
         CancellationToken cancellationToken,
         [FromForm] ImportSuiteMode suiteMode = ImportSuiteMode.None,
         [FromForm] Guid? suiteId = null,

@@ -145,6 +145,15 @@ local secrets) holds environment-specific config. At minimum you need:
 }
 ```
 
+> **Windows:** `playwright-mcp.sh` needs a POSIX shell to execute, and the
+> backend launches `Command` as a raw process (no shell), so Windows can't
+> run the `.sh` wrapper directly. Point `Command`/`Arguments` at Node and the
+> CLI script instead:
+> ```jsonc
+> "Command": "node",
+> "Arguments": [ "/absolute/path/to/QANexus/tools/mcp/node_modules/@playwright/mcp/cli.js", "--headless", "--isolated", "--browser", "chromium" ]
+> ```
+
 See [AI provider configuration](#ai-provider-configuration) below for other
 providers (Azure OpenAI, Anthropic/Claude, local LM Studio/Ollama, Gemini).
 `Auth0` (Domain/Audience/ClientId) already has working dev-tenant defaults in

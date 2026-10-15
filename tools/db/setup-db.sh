@@ -2,9 +2,17 @@
 # Sets up a fresh Postgres database for ATIP and applies all EF Core migrations.
 #
 # Usage:
-#   tools/db/setup-db.sh            # Docker Postgres (docker-compose.yml), port 5433
-#   tools/db/setup-db.sh --local    # existing local Postgres install, port 5432
-#   tools/db/setup-db.sh --reset    # drop the database/volume first, then rebuild
+#   tools/db/setup-db.sh                        # Docker Postgres (docker-compose.yml), port 5433
+#   tools/db/setup-db.sh --local                 # existing local Postgres install, port 5432
+#   tools/db/setup-db.sh --reset                 # drop the database/volume first, then rebuild
+#   tools/db/setup-db.sh --remote "<conn-string>"  # apply migrations to a remote Postgres
+#
+# --remote takes an Npgsql connection string, e.g. from Neon/Supabase/Railway/Azure:
+#   "Host=my-server.postgres.database.azure.com;Port=5432;Database=postgres;Username=me;Password=***;SSL Mode=Require;Trust Server Certificate=true;Search Path=myschema"
+# Note: Host must be a bare hostname (no jdbc:// / postgresql:// scheme) — Npgsql, not JDBC.
+# It only runs the EF Core migrations (no docker/local provisioning) and does not
+# touch appsettings.Development.json for you — update that yourself if the app
+# needs to use the same remote DB.
 #
 # Idempotent: safe to re-run against an already-set-up environment.
 
@@ -12,12 +20,18 @@ set -euo pipefail
 
 MODE="docker"
 RESET=0
+REMOTE_CONNECTION_STRING=""
 for arg in "$@"; do
   case "$arg" in
     --local) MODE="local" ;;
     --reset) RESET=1 ;;
+    --remote=*) MODE="remote"; REMOTE_CONNECTION_STRING="${arg#--remote=}" ;;
+    --remote)
+      echo "--remote requires a connection string, e.g. --remote=\"Host=...;Database=...;...\"" >&2
+      exit 1
+      ;;
     -h|--help)
-      sed -n '2,10p' "$0"
+      sed -n '2,14p' "$0"
       exit 0
       ;;
     *)
@@ -26,6 +40,11 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+if [[ "$MODE" == "remote" && -z "$REMOTE_CONNECTION_STRING" ]]; then
+  echo "--remote requires a connection string, e.g. --remote=\"Host=...;Database=...;...\"" >&2
+  exit 1
+fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
@@ -54,7 +73,7 @@ if [[ "$MODE" == "docker" ]]; then
     echo "Postgres did not become ready in time" >&2
     exit 1
   fi
-else
+elif [[ "$MODE" == "local" ]]; then
   DB_PORT=5432
   command -v psql >/dev/null 2>&1 || { echo "psql not found; install PostgreSQL or use docker mode" >&2; exit 1; }
 
@@ -68,9 +87,15 @@ else
     || psql postgres -c "CREATE ROLE $DB_USER LOGIN PASSWORD '$DB_PASSWORD';"
   psql postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" | grep -q 1 \
     || psql postgres -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;"
+else
+  echo "==> Using remote Postgres (no provisioning; the database must already exist)"
 fi
 
-CONNECTION_STRING="Host=localhost;Port=$DB_PORT;Database=$DB_NAME;Username=$DB_USER;Password=$DB_PASSWORD"
+if [[ "$MODE" == "remote" ]]; then
+  CONNECTION_STRING="$REMOTE_CONNECTION_STRING"
+else
+  CONNECTION_STRING="Host=localhost;Port=$DB_PORT;Database=$DB_NAME;Username=$DB_USER;Password=$DB_PASSWORD"
+fi
 
 echo "==> Ensuring dotnet-ef $EF_VERSION is installed"
 if dotnet tool list --global | grep -q "^dotnet-ef .*$EF_VERSION"; then
@@ -91,4 +116,7 @@ echo "Database ready at: $CONNECTION_STRING"
 if [[ "$MODE" == "docker" ]]; then
   echo "Update ConnectionStrings:Postgres in appsettings.Development.json to use Port=$DB_PORT"
   echo "(the default in appsettings.json assumes a local install on port 5432)."
+elif [[ "$MODE" == "remote" ]]; then
+  echo "Update ConnectionStrings:Postgres in appsettings.Development.json to this remote"
+  echo "connection string if you want the app itself to use this database."
 fi

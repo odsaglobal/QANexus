@@ -61,7 +61,7 @@ export function OnboardingGate() {
 
         <h1 className="text-2xl font-bold text-foreground">Name your workspace</h1>
         <p className="text-muted-foreground mt-1.5">
-          This is your team's home in ATiP — projects, scenarios, and runs live here. You can
+          This is your team's home in Patterns.ai — projects, scenarios, and runs live here. You can
           change it later in Settings.
         </p>
 

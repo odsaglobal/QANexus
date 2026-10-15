@@ -36,7 +36,7 @@ export function LoginPage() {
 
           <h1 className="text-[26px] font-bold leading-tight text-foreground">Welcome back</h1>
           <p className="mt-1.5 text-sm text-muted-foreground">
-            Sign in to your ATiP workspace to pick up where your last run left off.
+            Sign in to your Patterns.ai workspace to pick up where your last run left off.
           </p>
 
           <div className="mt-8">

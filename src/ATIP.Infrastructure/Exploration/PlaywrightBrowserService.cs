@@ -253,6 +253,15 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
     private ICDPSessionEvent? _screencastFrameEvent;
     private Func<string, Task>? _onFrame;
 
+    /// <summary>
+    /// Count of requests currently in flight on whichever page is active. Tracked via request
+    /// events rather than a single <c>WaitForLoadStateAsync(NetworkIdle)</c> call so
+    /// <see cref="WaitForPageSettledAsync"/> can tell "quiet between two bursts" apart from
+    /// "actually done" — a login click regularly fires its auth call, goes briefly quiet, then
+    /// fires a second call for the profile/tenant data before the page reacts.
+    /// </summary>
+    private int _inFlightRequests;
+
     public string CurrentUrl => _page?.Url ?? string.Empty;
     public string CurrentTitle { get; private set; } = string.Empty;
 
@@ -317,6 +326,7 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
         _page = await _browser.NewPageAsync(new BrowserNewPageOptions
         {
             ViewportSize = new ViewportSize { Width = 1280, Height = 720 },
+            IgnoreHTTPSErrors = true,
         });
 
         // Suppress most console noise; keep errors surfaced through exceptions.
@@ -326,6 +336,8 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
         // one must always be handled. The policy decides how; the default dismisses, which is what
         // exploration wants, while a step can opt into accepting or into typing a prompt answer.
         _page.Dialog += HandleDialogAsync;
+
+        WireRequestTracking(_page);
 
         // Real catalogues open detail pages in a NEW TAB — every Flipkart product card is
         // target="_blank". Playwright keeps driving the ORIGINAL tab, so a card click looked like it
@@ -353,6 +365,7 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
         {
             opened.PageError += (_, _) => { /* ignore page errors during exploration */ };
             opened.Dialog += HandleDialogAsync;
+            WireRequestTracking(opened);
             opened.Close += (_, _) =>
             {
                 if (ReferenceEquals(_page, opened))
@@ -378,6 +391,19 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
             }
         }
         catch { /* adopting a popup is best-effort — never break the run over it */ }
+    }
+
+    /// <summary>
+    /// Tracks in-flight requests on <paramref name="page"/> so <see cref="WaitForPageSettledAsync"/>
+    /// can wait for the network to actually go quiet instead of guessing from a single snapshot in
+    /// time. Requests from every page share one counter — an exact per-tab count is not the point,
+    /// only "is anything happening anywhere right now".
+    /// </summary>
+    private void WireRequestTracking(IPage page)
+    {
+        page.Request += (_, _) => Interlocked.Increment(ref _inFlightRequests);
+        page.RequestFinished += (_, _) => Interlocked.Decrement(ref _inFlightRequests);
+        page.RequestFailed += (_, _) => Interlocked.Decrement(ref _inFlightRequests);
     }
 
     /// <summary>Moves the live screencast to <paramref name="page"/>, swallowing any failure.</summary>
@@ -783,15 +809,17 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
     /// <summary>
     /// Waits for the page to stop changing before its state is read.
     /// <para>
-    /// Waiting on load state alone is NOT enough: a click that submits a form returns before the
-    /// browser has begun navigating, so the old document is still "loaded" and the page would be
-    /// read — and the step judged — against the page it is navigating away from. So this polls until
-    /// the URL and ready state have been stable across several consecutive samples, which lets a
-    /// navigation that starts a moment after the click be observed. Every wait is best-effort and
-    /// bounded: a page that never goes quiet must not stall the run.
+    /// A single up-front check is not enough: a login click's auth request can finish, leave the page
+    /// briefly quiet, and then fire a second request (profile/tenant data) before anything visible
+    /// happens — a one-shot "is it idle now" would declare victory in that gap and read (and judge)
+    /// the page before the app had any real chance to react. So this polls until the URL, ready state
+    /// AND in-flight request count (tracked live via <see cref="WireRequestTracking"/>) have all been
+    /// stable across several consecutive samples — any new request restarts the count. Every wait is
+    /// best-effort and bounded: a page with polling/websockets that never truly idles must not stall
+    /// the run.
     /// </para>
     /// </summary>
-    public async Task WaitForPageSettledAsync(int timeoutMs = 5000, CancellationToken ct = default)
+    public async Task WaitForPageSettledAsync(int timeoutMs = 15000, CancellationToken ct = default)
     {
         if (_page is null)
         {
@@ -824,7 +852,7 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
                 continue;
             }
 
-            if (readyState == "complete" && url == lastUrl)
+            if (readyState == "complete" && url == lastUrl && Volatile.Read(ref _inFlightRequests) <= 0)
             {
                 stable++;
             }

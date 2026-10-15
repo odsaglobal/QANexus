@@ -7,7 +7,7 @@ export function PlaceholderPage({ title }: { title: string }) {
       <div>
         <h1 className="text-2xl font-bold text-foreground">{title}</h1>
         <p className="text-muted-foreground text-sm mt-0.5">
-          Part of the ATiP intelligent testing pipeline.
+          Part of the Patterns.ai intelligent testing pipeline.
         </p>
       </div>
       <Card>
@@ -17,7 +17,7 @@ export function PlaceholderPage({ title }: { title: string }) {
           </div>
           <h2 className="text-lg font-semibold text-foreground mb-2">Roadmap — coming soon</h2>
           <p className="text-muted-foreground text-sm max-w-md mx-auto">
-            <strong className="text-violet-600">{title}</strong> is on the ATiP roadmap.
+            <strong className="text-violet-600">{title}</strong> is on the Patterns.ai roadmap.
             The foundation, Requirement Intelligence, Scenario Generation, Knowledge Graph and
             Application Explorer are live and ready.
           </p>
