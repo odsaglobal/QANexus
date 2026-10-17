@@ -323,7 +323,42 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
             "webkit" => await _playwright.Webkit.LaunchAsync(new BrowserTypeLaunchOptions { Headless = headless }),
             _ => await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = headless })
         };
-        _page = await _browser.NewPageAsync(new BrowserNewPageOptions
+        await OpenFreshPageAsync();
+    }
+
+    /// <summary>
+    /// Throws away the current browser context (cookies, storage, login, open tabs) and opens a
+    /// brand-new one, so the next test starts exactly like a fresh browser session. The browser
+    /// process is reused — only the isolated context is replaced. The live screencast, if running,
+    /// is moved onto the new page.
+    /// </summary>
+    public async Task StartNewSessionAsync()
+    {
+        if (_browser is null)
+        {
+            throw new InvalidOperationException("Browser is not initialized.");
+        }
+
+        var oldContext = _page?.Context;
+        await OpenFreshPageAsync();
+
+        if (oldContext is not null)
+        {
+            try { await oldContext.CloseAsync(); } catch { /* already gone */ }
+        }
+
+        if (_onFrame is not null && _page is not null)
+        {
+            await FollowScreencastAsync(_page);
+        }
+    }
+
+    private async Task OpenFreshPageAsync()
+    {
+        _frameSelectors.Clear();
+        _inFlightRequests = 0;
+
+        _page = await _browser!.NewPageAsync(new BrowserNewPageOptions
         {
             ViewportSize = new ViewportSize { Width = 1280, Height = 720 },
             IgnoreHTTPSErrors = true,

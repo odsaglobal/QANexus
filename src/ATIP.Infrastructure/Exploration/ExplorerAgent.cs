@@ -2207,11 +2207,7 @@ public sealed class ExplorerAgent : IExplorerAgent
                 ct);
         }
 
-        // Sequential run in a single shared browser session: navigate once, then walk each
-        // scenario's steps so state carries over between scenarios.
-        await browser.NavigateAsync(baseUrl, ct);
-
-        await PublishLogAsync(session, $"Suite '{suite.Name}' — {ordered.Count} test(s) to run.", "info", ct);
+        await PublishLogAsync(session, $"Suite '{suite.Name}' — {ordered.Count} test(s) to run, each in its own browser session.", "info", ct);
 
         for (var i = 0; i < ordered.Count; i++)
         {
@@ -2219,6 +2215,15 @@ public sealed class ExplorerAgent : IExplorerAgent
             {
                 break;
             }
+
+            // Every test starts from a clean browser session (no cookies, storage or login carried
+            // over from the previous test), so results never depend on suite order.
+            if (i > 0)
+            {
+                await browser.StartNewSessionAsync();
+            }
+
+            await browser.NavigateAsync(baseUrl, ct);
 
             await WalkScenarioStepsAsync(session, browser, baseUrl, ordered[i], ct, i + 1, ordered.Count);
         }

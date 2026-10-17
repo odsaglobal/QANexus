@@ -36,3 +36,6 @@ src/ATIP.Api/storage/
 
 # local developer secrets
 src/ATIP.Api/appsettings.Development.json
+
+# publish output
+publish/
