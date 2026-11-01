@@ -11,7 +11,7 @@
   "Llm": {
     "Provider": "azure",
     "Endpoint": "https://patternsazopenai.openai.azure.com/openai/deployments/patternsai-gpt-4.1/chat/completions?api-version=2025-04-01-preview",
-    "ApiKey": "<your-azure-openai-key>",
+    "ApiKey": "{{OpenAPIKey}}",
     "Model": "gpt-4o",
     "TimeoutMs": 120000,
     "MaxSelectors": 5,
@@ -30,6 +30,6 @@
   "TestRail": {
     "BaseUrl": "https://assertone.testrail.io",
     "Username": "assertone2026@gmail.com",
-    "ApiKey": "<your-azure-openai-key>"
+    "ApiKey": "q3qvOusnozBsCGbdcxy4-0Sm/bPwyw1TqwI92Kea0"
   }
 }
