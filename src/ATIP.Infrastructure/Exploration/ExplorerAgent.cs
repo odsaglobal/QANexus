@@ -40,6 +40,7 @@ public sealed class ExplorerAgent : IExplorerAgent
     private readonly PlaywrightMcpOptions _mcp;
     private readonly ITestEngine _engine;
     private readonly WebBrowserSession _browserSession;
+    private readonly ILocatorRepository _locators;
     private readonly ILogger<ExplorerAgent> _logger;
 
     /// <summary>
@@ -77,6 +78,7 @@ public sealed class ExplorerAgent : IExplorerAgent
         Microsoft.Extensions.Options.IOptions<PlaywrightMcpOptions> mcpOptions,
         ITestEngine engine,
         WebBrowserSession browserSession,
+        ILocatorRepository locators,
         ILogger<ExplorerAgent> logger)
     {
         _db = db;
@@ -87,6 +89,7 @@ public sealed class ExplorerAgent : IExplorerAgent
         _mcp = mcpOptions.Value;
         _engine = engine;
         _browserSession = browserSession;
+        _locators = locators;
         _logger = logger;
     }
 
@@ -458,6 +461,106 @@ public sealed class ExplorerAgent : IExplorerAgent
         }
     }
 
+    /// <summary>Renders the session's settled Q&amp;A log for the prompt, or null when there is none yet.</summary>
+    private static string? FormatAnsweredQuestions(ExplorationSession session)
+    {
+        if (string.IsNullOrWhiteSpace(session.AnsweredQuestionsJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            var entries = JsonSerializer.Deserialize<List<string>>(session.AnsweredQuestionsJson!, JsonOpts);
+            return entries is { Count: > 0 } ? string.Join("\n\n", entries) : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Pauses the session on a genuine ambiguity and blocks until a human answers it (or a timeout
+    /// elapses), then folds the answer into the session's running Q&amp;A log so it is never asked again.
+    /// </summary>
+    /// <remarks>
+    /// Pausing rather than guessing is the point of this hook: a wrong guess produces a recorded step
+    /// that replays forever without ever being wrong "loudly" — it just quietly checks something nobody
+    /// asked for. Polling the database (rather than an in-process signal) is what lets the answer arrive
+    /// on a completely different request/process from the one that is blocked here, which is the only
+    /// way a background exploration and an HTTP-driven UI can talk to each other.
+    /// </remarks>
+    /// <returns>The trimmed answer, or null if no one answered before the timeout / the run was cancelled.</returns>
+    private async Task<string?> AskAndAwaitAnswerAsync(
+        ExplorationSession session,
+        string question,
+        string? context,
+        CancellationToken ct)
+    {
+        session.PendingQuestion = question;
+        session.PendingQuestionContext = context;
+        session.PendingQuestionAskedAtUtc = _clock.UtcNow;
+        session.PendingQuestionAnswer = null;
+        session.Status = ExplorationStatus.AwaitingInput;
+        await _db.SaveChangesAsync(ct);
+        await PublishLogAsync(session, $"  ❓ {question}", "warn", ct);
+        await PublishStatusAsync(session, session.SeedUrl ?? string.Empty, ct);
+
+        var deadline = _clock.UtcNow.AddMinutes(15);
+        string? answer = null;
+        try
+        {
+            while (_clock.UtcNow < deadline)
+            {
+                ct.ThrowIfCancellationRequested();
+                await Task.Delay(TimeSpan.FromSeconds(3), ct);
+
+                var current = await _db.ExplorationSessions
+                    .AsNoTracking()
+                    .Where(s => s.Id == session.Id)
+                    .Select(s => new { s.PendingQuestionAnswer, s.Status })
+                    .FirstOrDefaultAsync(ct);
+
+                if (current is null || current.Status == ExplorationStatus.Cancelled)
+                {
+                    throw new OperationCanceledException("Exploration session was cancelled while awaiting an answer.");
+                }
+
+                if (!string.IsNullOrWhiteSpace(current.PendingQuestionAnswer))
+                {
+                    answer = current.PendingQuestionAnswer.Trim();
+                    break;
+                }
+            }
+        }
+        finally
+        {
+            session.Status = ExplorationStatus.Running;
+            session.PendingQuestion = null;
+            session.PendingQuestionContext = null;
+            session.PendingQuestionAnswer = null;
+            await _db.SaveChangesAsync(ct);
+        }
+
+        if (answer is not null)
+        {
+            var log = string.IsNullOrWhiteSpace(session.AnsweredQuestionsJson)
+                ? new List<string>()
+                : JsonSerializer.Deserialize<List<string>>(session.AnsweredQuestionsJson!, JsonOpts) ?? new List<string>();
+            log.Add($"Q: {question}\nA: {answer}");
+            session.AnsweredQuestionsJson = JsonSerializer.Serialize(log, JsonOpts);
+            await _db.SaveChangesAsync(ct);
+            await PublishLogAsync(session, $"  ✓ Answered: {answer}", "success", ct);
+        }
+        else
+        {
+            await PublishLogAsync(session, "  ⚠ No answer received in time — continuing without it.", "warn", ct);
+        }
+
+        return answer;
+    }
+
     /// <summary>
     /// Structured QA verification of a step/scenario's expected result against the LIVE page. Decomposes
     /// the expectation into atomic conditions (presence/absence, counts/thresholds/ranges, ordering,
@@ -754,6 +857,13 @@ public sealed class ExplorerAgent : IExplorerAgent
         var decided = false;
         // How many times we've rejected an "I'm done" claim made before the agent did anything at all.
         var prematureCompletions = 0;
+        // The most recently interacted-with field, so a bare "press Enter" (which addresses whatever
+        // has focus on a live page) can be recorded bound to THAT element instead of the page. A
+        // page-level key press replays by trusting ambient focus, which a fresh browser session does
+        // not reliably preserve across two separate driver calls — binding to the element makes the
+        // replay press exactly where the text was typed, regardless of focus history.
+        string? lastFieldDescriptor = null;
+        string? lastFieldKey = null;
 
         for (var turn = 1; turn <= maxTurns; turn++)
         {
@@ -771,7 +881,7 @@ public sealed class ExplorerAgent : IExplorerAgent
             // tab that MCP never switches to, so the agent would keep clicking a page it already left.
             await mcp.StabilizePageAsync(ct);
             var snapshot = TrimSnapshot(await mcp.SnapshotAsync(ct), goalText);
-            var decision = await DecideNextStepActionAsync(missionStep, mcp.CurrentUrl, snapshot, history.ToString(), turn, maxTurns, ct);
+            var decision = await DecideNextStepActionAsync(missionStep, mcp.CurrentUrl, snapshot, history.ToString(), turn, maxTurns, ct, FormatAnsweredQuestions(session));
             if (decision is null)
             {
                 history.AppendLine($"- turn {turn}: no decision returned.");
@@ -780,6 +890,16 @@ public sealed class ExplorerAgent : IExplorerAgent
 
             decision.Value = ResolveVarsOrNull(decision.Value);
             var action = decision.Action?.Trim().ToLowerInvariant();
+
+            if (action == "ask" && !string.IsNullOrWhiteSpace(decision.Question))
+            {
+                var answer = await AskAndAwaitAnswerAsync(session, decision.Question!, decision.QuestionContext, ct);
+                history.AppendLine(
+                    answer is null
+                        ? $"- turn {turn}: asked \"{decision.Question}\" but timed out waiting for an answer; deciding without it."
+                        : $"- turn {turn}: asked \"{decision.Question}\" -> answered: \"{answer}\".");
+                continue;
+            }
 
             // MCP reports a composite control's accessible name as the WHOLE of its nested text, so a
             // product card arrives as a 400-character blob of title + rating + price + badges. Left
@@ -847,6 +967,17 @@ public sealed class ExplorerAgent : IExplorerAgent
             }
 
             var preActionUrl = mcp.CurrentUrl;
+
+            // Interrogate the element while its snapshot handle is still valid. A click routinely
+            // navigates, which detaches the ref and takes the element's identity with it, so asking
+            // afterwards would come back empty for exactly the actions worth recording.
+            IReadOnlyList<(string Strategy, string Value)> elementCandidates = Array.Empty<(string, string)>();
+            if (action is "click" or "type" or "select"
+                && !string.IsNullOrWhiteSpace(decision.Ref)
+                && !string.IsNullOrWhiteSpace(decision.Target))
+            {
+                elementCandidates = await mcp.DescribeElementAsync(decision.Target!, decision.Ref!, ct);
+            }
 
             // Announce the action BEFORE performing it. Everything that follows — settling the page,
             // re-snapshotting, the descriptor retry, the screenshot — takes seconds, so publishing only
@@ -977,22 +1108,67 @@ public sealed class ExplorerAgent : IExplorerAgent
                         // Capture the CONCRETE action alongside the human description so that applying
                         // these steps yields a deterministically replayable script — a later RUN can then
                         // execute it with plain Playwright, with no MCP server and no AI tokens.
-                        var script = SerializeRecordedActions(
-                        [
-                            new RecordedStepAction
+                        var elementKey = await CaptureElementAsync(session, elementCandidates, decision.Target, ct);
+
+                        RecordedStepAction primary;
+                        if (action == "press")
+                        {
+                            // Bind to the last field interacted with, if any — see lastFieldDescriptor's
+                            // declaration for why a page-level press is not reliable enough to record.
+                            primary = lastFieldDescriptor is null
+                                ? new RecordedStepAction { Kind = "press", Target = decision.Target, Value = decision.Value }
+                                : new RecordedStepAction
+                                {
+                                    Kind = "press",
+                                    Target = lastFieldDescriptor,
+                                    Value = decision.Target,
+                                    ElementKey = lastFieldKey,
+                                };
+                        }
+                        else
+                        {
+                            primary = new RecordedStepAction
                             {
                                 Kind = action!,
                                 Target = action == "navigate" ? mcp.CurrentUrl : decision.Target,
                                 Value = decision.Value,
-                            },
-                        ]);
+                                ElementKey = elementKey,
+                            };
+
+                            if (action is "type" or "click" or "select" && !string.IsNullOrWhiteSpace(decision.Target))
+                            {
+                                lastFieldDescriptor = decision.Target;
+                                lastFieldKey = elementKey;
+                            }
+                        }
+
+                        var actions = new List<RecordedStepAction> { primary };
+
+                        // Compile the observation into checks NOW, against the page this step produced.
+                        // Deferring to the end of the mission would compile them against the final page,
+                        // which is a different page for every step but the last.
+                        var expectation = CleanExpectedResult(decision.ExpectedResult);
+                        if (!string.IsNullOrWhiteSpace(expectation))
+                        {
+                            var assertions = await CompileMcpAssertionsAsync(session, mcp, desc, expectation!, order, ct);
+                            foreach (var assertion in assertions)
+                            {
+                                actions.Add(new RecordedStepAction
+                                {
+                                    Kind = "assert",
+                                    Target = assertion.Label,
+                                    Assertion = assertion,
+                                    CompiledFrom = expectation,
+                                });
+                            }
+                        }
 
                         discovered.Add(new ProposedStep
                         {
                             Order = order,
                             Action = desc,
-                            ExpectedResult = CleanExpectedResult(decision.ExpectedResult),
-                            RecordedActionsJson = script,
+                            ExpectedResult = expectation,
+                            RecordedActionsJson = SerializeRecordedActions(actions),
                         });
                     }
 
@@ -2664,26 +2840,23 @@ public sealed class ExplorerAgent : IExplorerAgent
                 continue;
             }
 
-            // Could not heal — escalate to the user.
+            // Could not heal — escalate to the user. Deliberately NOT persisting an earlier heal from
+            // this same list either: the step as a whole never proved itself, so nothing about this
+            // attempt should survive into the recording (see the note above the final return points).
             var reason = $"Could not locate '{action.Target}' to {action.Kind} for this step. The page may have changed or the step description is ambiguous — please refine it.";
             step.NeedsReview = true;
             step.ReviewReason = reason;
-            if (anyHealed)
-            {
-                step.RecordedActionsJson = SerializeRecordedActions(recorded);
-            }
             await _db.SaveChangesAsync(ct);
             await PublishLogAsync(session, $"  ⚠ Needs your input — step {step.Order}: {reason}", "warn", ct);
             return (StepRunStatus.Failed, reason);
         }
 
-        // Persist any healed locators so the next run is deterministic again.
-        if (anyHealed)
-        {
-            step.RecordedActionsJson = SerializeRecordedActions(recorded);
-            await _db.SaveChangesAsync(ct);
-        }
-
+        // A heal only proves an element could still be clicked, not that the click did what the step
+        // expects — a facet header and a facet option can both be "successfully" clicked while only one
+        // of them is right. Persisting here, before the assertions below run, has previously baked a
+        // wrong-but-clickable substitute permanently into the recording, so every later run silently
+        // replayed the wrong element and failed forever with no path back. Persistence is now deferred
+        // to the two PASS returns below, once the expected result has actually been confirmed.
         var expectation = ResolveVars(step.ExpectedResult ?? string.Empty);
 
         // Preferred path: the expectation has already been compiled into assertions, so the verdict is
@@ -2730,12 +2903,19 @@ public sealed class ExplorerAgent : IExplorerAgent
                 var failedChecks = checks.Where(c => !c.Passed).ToList();
                 if (failedChecks.Count > 0)
                 {
+                    await RejectUnprovenHealAsync(
+                        session,
+                        step,
+                        anyHealed,
+                        $"Actual: {string.Join("; ", failedChecks.Select(f => f.Actual))}",
+                        ct);
                     return new StepOutcome(
                         StepRunStatus.Failed,
                         $"Actual: {string.Join("; ", failedChecks.Select(f => f.Actual))}",
                         checks);
                 }
 
+                await PersistProvenHealAsync(step, recorded, anyHealed, ct);
                 return new StepOutcome(
                     anyHealed ? StepRunStatus.Healed : StepRunStatus.Passed,
                     anyHealed
@@ -2759,14 +2939,56 @@ public sealed class ExplorerAgent : IExplorerAgent
         {
             // The reason already leads with "Actual: …"; prefixing another "the expected result was not
             // met" would say the same thing twice before the reader reaches the observation.
+            await RejectUnprovenHealAsync(session, step, anyHealed, verificationReason, ct);
             return new StepOutcome(StepRunStatus.Failed, verificationReason, freshChecks);
         }
 
+        await PersistProvenHealAsync(step, recorded, anyHealed, ct);
         var status = anyHealed ? StepRunStatus.Healed : StepRunStatus.Passed;
         var detail = anyHealed
             ? "Replayed the recorded actions and healed a changed locator; the expected result is present."
             : "Replayed the recorded actions; the expected result is present.";
         return new StepOutcome(status, detail, freshChecks);
+    }
+
+    /// <summary>
+    /// Bakes a heal into the recording only once the step's expected result has actually been confirmed
+    /// on the page it produced — a click landing is not proof it was the RIGHT click.
+    /// </summary>
+    private async Task PersistProvenHealAsync(ScenarioStep step, List<RecordedStepAction> recorded, bool anyHealed, CancellationToken ct)
+    {
+        if (!anyHealed)
+        {
+            return;
+        }
+
+        step.RecordedActionsJson = SerializeRecordedActions(recorded);
+        step.NeedsReview = false;
+        step.ReviewReason = null;
+        await _db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// A heal that still leaves the step failing its expected result must not be written back — the
+    /// substitute element was not the right one. Leaving the ORIGINAL recording in place means the next
+    /// run re-attempts a fresh heal (or a human refines the step) instead of the wrong click being
+    /// replayed identically, and identically failing, forever.
+    /// </summary>
+    private async Task RejectUnprovenHealAsync(ExplorationSession session, ScenarioStep step, bool anyHealed, string reason, CancellationToken ct)
+    {
+        if (!anyHealed)
+        {
+            return;
+        }
+
+        step.NeedsReview = true;
+        step.ReviewReason = $"A locator was re-located during this run, but the expected result still was not met: {reason}";
+        await _db.SaveChangesAsync(ct);
+        await PublishLogAsync(
+            session,
+            $"  ⚠ Step {step.Order}: discarded a heal that didn't produce the expected result — the original recording is kept for the next attempt.",
+            "warn",
+            ct);
     }
 
     /// <summary>
@@ -2777,6 +2999,163 @@ public sealed class ExplorerAgent : IExplorerAgent
     /// stale assertions, which sends the step back through verification and recompiles it.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// Stores the proven locators for an element the exploration just acted on, under a key the later
+    /// deterministic run will look it up by.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is what turns an exploration into something a run can execute. The agent addresses elements
+    /// by snapshot <c>ref</c>, which is a handle into one page render and means nothing in a fresh
+    /// browser; recording only the human descriptor leaves the run engine to re-derive a locator by
+    /// probing, which is exactly the guesswork that makes a first run fail. Writing the locators that
+    /// were demonstrated to resolve — during the very session that demonstrated it — means the run
+    /// starts from evidence instead of from a description.
+    /// </para>
+    /// <para>
+    /// Failure here is deliberately silent: learning where an element lives is an optimisation, and a
+    /// step that genuinely worked must not be reported as broken because the note about it could not be
+    /// filed.
+    /// </para>
+    /// </remarks>
+    /// <returns>The element key the locators were stored under, or null if nothing could be stored.</returns>
+    private async Task<string?> CaptureElementAsync(
+        ExplorationSession session,
+        IReadOnlyList<(string Strategy, string Value)> candidates,
+        string? descriptor,
+        CancellationToken ct)
+    {
+        var key = ElementKeys.From(descriptor);
+        if (key is null || candidates.Count == 0)
+        {
+            return null;
+        }
+
+        var stored = 0;
+        foreach (var (strategy, value) in candidates.Take(5))
+        {
+            if (!Enum.TryParse<LocatorStrategy>(strategy, ignoreCase: true, out var parsed))
+            {
+                continue;
+            }
+
+            try
+            {
+                await _locators.UpsertLocatorAsync(
+                    session.TenantId,
+                    session.ProjectId,
+                    key,
+                    descriptor!.Trim(),
+                    TestPlatform.Web,
+                    parsed,
+                    value,
+                    LocatorOrigin.Discovered,
+                    ct);
+                stored++;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "Could not store locator {Strategy} for element key {ElementKey}.", strategy, key);
+            }
+        }
+
+        if (stored == 0)
+        {
+            return null;
+        }
+
+        session.ElementsDiscovered += stored;
+        return key;
+    }
+
+    /// <summary>
+    /// Turns what the exploration just observed into machine-checkable assertions, keeping them only if
+    /// they hold on the very page that produced the observation.
+    /// <para>
+    /// The MCP counterpart of <see cref="TryCompileAssertionsAsync"/>. Compiling here, inline, is what
+    /// makes the result trustworthy: the assertions are evaluated against the page state the step
+    /// actually produced, which is gone by the end of the mission. A set that does not reproduce what
+    /// was observed is a mistranslation and is discarded, leaving the step to fall back to AI
+    /// verification rather than carrying a check that would fail forever.
+    /// </para>
+    /// </summary>
+    private async Task<List<StepAssertion>> CompileMcpAssertionsAsync(
+        ExplorationSession session,
+        PlaywrightMcpBrowser mcp,
+        string action,
+        string expectation,
+        int order,
+        CancellationToken ct)
+    {
+        var none = new List<StepAssertion>();
+        if (!_llm.IsLive || string.IsNullOrWhiteSpace(expectation))
+        {
+            return none;
+        }
+
+        List<StepAssertion> proposed;
+        try
+        {
+            var digest = await mcp.GetAssertionContextAsync(ct: ct);
+            if (string.IsNullOrWhiteSpace(digest))
+            {
+                return none;
+            }
+
+            var reply = await _llm.CompleteAsync(
+                AssertionCompilerPrompts.System,
+                AssertionCompilerPrompts.BuildUserPrompt(expectation, action, mcp.CurrentUrl, digest),
+                jsonMode: true,
+                ct);
+
+            var json = JsonExtraction.ExtractJsonObject(reply);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return none;
+            }
+
+            proposed = JsonSerializer.Deserialize<CompiledAssertions>(json, JsonOpts)?.Assertions ?? new();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Compiling is an optimisation, never a requirement.
+            _logger.LogWarning(ex, "Could not compile MCP assertions for step {Order}.", order);
+            return none;
+        }
+
+        proposed = proposed
+            .Where(a => a is not null && !string.IsNullOrWhiteSpace(a.Operator))
+            .Take(10)
+            .ToList();
+
+        if (proposed.Count == 0)
+        {
+            return none;
+        }
+
+        foreach (var assertion in proposed)
+        {
+            var check = await AssertionEvaluator.EvaluateAsync(mcp, assertion, ct);
+            if (check.Unresolved || !check.Passed)
+            {
+                await PublishLogAsync(
+                    session,
+                    $"  ⤓ Discarded the compiled assertions for step {order} — they did not reproduce what was just observed.",
+                    "warn",
+                    ct);
+                return none;
+            }
+        }
+
+        await PublishLogAsync(
+            session,
+            $"  ⤓ Compiled {proposed.Count} assertion(s) for step {order} — future runs verify this step without AI.",
+            "info",
+            ct);
+
+        return proposed;
+    }
+
     private static List<StepAssertion> CompiledAssertionsFor(List<RecordedStepAction> recorded, string expectation) =>
         recorded
             .Where(a => string.Equals(a.Kind?.Trim(), "assert", StringComparison.OrdinalIgnoreCase)
@@ -2968,7 +3347,7 @@ public sealed class ExplorerAgent : IExplorerAgent
     /// </summary>
     private static bool RecordedActionTargetsElement(RecordedStepAction action) =>
         action.Platform is TestPlatform.Web or TestPlatform.Mobile
-        && RecordedActionMapper.TargetsElement(action.Kind);
+        && RecordedActionMapper.TargetsElement(action);
 
     /// <summary>
     /// Re-locates the element for a failed recorded action using one focused AI turn over the current
@@ -3068,7 +3447,7 @@ public sealed class ExplorerAgent : IExplorerAgent
             var pageUrl = string.IsNullOrWhiteSpace(browser.CurrentUrl) ? baseUrl : browser.CurrentUrl;
             var snapshot = await browser.SnapshotForAgentAsync(60, ct);
 
-            var decision = await DecideNextStepActionAsync(step, pageUrl, snapshot, history.ToString(), turn, maxTurns, ct);
+            var decision = await DecideNextStepActionAsync(step, pageUrl, snapshot, history.ToString(), turn, maxTurns, ct, FormatAnsweredQuestions(session));
             if (decision is null)
             {
                 history.AppendLine($"- turn {turn}: no decision returned; retrying.");
@@ -3076,6 +3455,16 @@ public sealed class ExplorerAgent : IExplorerAgent
             }
 
             var action = decision.Action?.Trim().ToLowerInvariant();
+
+            if (action == "ask" && !string.IsNullOrWhiteSpace(decision.Question))
+            {
+                var answer = await AskAndAwaitAnswerAsync(session, decision.Question!, decision.QuestionContext, ct);
+                history.AppendLine(
+                    answer is null
+                        ? $"- turn {turn}: asked \"{decision.Question}\" but timed out waiting for an answer; deciding without it."
+                        : $"- turn {turn}: asked \"{decision.Question}\" -> answered: \"{answer}\".");
+                continue;
+            }
 
             if (decision.StepComplete || action == "finish" || decision.StepFailed)
             {
@@ -3146,13 +3535,14 @@ public sealed class ExplorerAgent : IExplorerAgent
         string history,
         int turn,
         int maxTurns,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? answeredQuestions = null)
     {
         try
         {
             var raw = await _llm.CompleteAsync(
                 StepAgentPrompts.System,
-                StepAgentPrompts.BuildUserPrompt(ResolveVars(step.Action), ResolveVarsOrNull(step.ExpectedResult), pageUrl, snapshot, history, turn, maxTurns, _businessContext),
+                StepAgentPrompts.BuildUserPrompt(ResolveVars(step.Action), ResolveVarsOrNull(step.ExpectedResult), pageUrl, snapshot, history, turn, maxTurns, _businessContext, answeredQuestions),
                 jsonMode: true,
                 ct);
 

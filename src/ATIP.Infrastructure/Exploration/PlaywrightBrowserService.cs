@@ -15,7 +15,7 @@ namespace ATIP.Infrastructure.Exploration;
 /// Split across two files: this one holds exploration and snapshotting; the capabilities file adds
 /// the primitives the generic test engine drives (dialogs, frames, tabs, uploads, browser state).
 /// </remarks>
-public sealed partial class PlaywrightBrowserService : IAsyncDisposable
+public sealed partial class PlaywrightBrowserService : IAsyncDisposable, IAssertionPageReader
 {
 
     // Playwright-MCP-style snapshot. Stamps every VISIBLE interactive element with a stable
@@ -732,6 +732,16 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
                             if (v) return '[' + attr + '=""' + v + '""]';
                         }
                         if (el.id && !unstable(el.id)) return '#' + el.id;
+                        // Prefer semantic attributes over classnames: short, framework-generated class
+                        // hashes (e.g. CSS-module suffixes like nw1UBF) don't contain 3+ digits or a
+                        // css-/sc-/jsx- prefix, so they slip past 'unstable' below despite regenerating
+                        // on every deploy or session — a selector built from one would drift the next run.
+                        const name = el.getAttribute && el.getAttribute('name');
+                        if (name) return el.tagName.toLowerCase() + '[name=""' + name + '""]';
+                        const placeholder = el.getAttribute && el.getAttribute('placeholder');
+                        if (placeholder) return el.tagName.toLowerCase() + '[placeholder=""' + placeholder + '""]';
+                        const ariaLabel = el.getAttribute && el.getAttribute('aria-label');
+                        if (ariaLabel) return '[aria-label=""' + ariaLabel + '""]';
                         const cls = (typeof el.className === 'string' ? el.className : '')
                             .trim().split(/\s+/).filter(c => !unstable(c)).slice(0, 2);
                         return el.tagName.toLowerCase() + cls.map(c => '.' + c).join('');
@@ -803,6 +813,7 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
 
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
         string? lastUrl = null;
+        var lastTextLength = -1;
         var stable = 0;
 
         while (stable < requiredStableSamples && DateTime.UtcNow < deadline)
@@ -811,20 +822,28 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
 
             string url;
             string readyState;
+            int textLength;
             try
             {
                 url = _page.Url;
                 readyState = await _page.EvaluateAsync<string>("() => document.readyState");
+                // SPAs can report readyState "complete" and go network-idle while a client-side
+                // re-render (hydration finishing, a store update) is still in flight — e.g. Flipkart's
+                // results header briefly shows an empty query before the real one hydrates in. Text
+                // length is a cheap proxy for "the visible content stopped changing" that catches that
+                // case without needing to know anything about the specific framework doing it.
+                textLength = await _page.EvaluateAsync<int>("() => document.body ? document.body.innerText.length : 0");
             }
             catch
             {
                 // The document is being replaced mid-navigation: not settled, keep waiting.
                 stable = 0;
                 lastUrl = null;
+                lastTextLength = -1;
                 continue;
             }
 
-            if (readyState == "complete" && url == lastUrl)
+            if (readyState == "complete" && url == lastUrl && textLength == lastTextLength)
             {
                 stable++;
             }
@@ -832,6 +851,7 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
             {
                 stable = 0;
                 lastUrl = url;
+                lastTextLength = textLength;
             }
         }
 

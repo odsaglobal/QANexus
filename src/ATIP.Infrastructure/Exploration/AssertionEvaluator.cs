@@ -17,7 +17,7 @@ public static class AssertionEvaluator
 {
     /// <summary>Reads the page and decides one assertion. Never throws: a broken assertion fails its check.</summary>
     public static async Task<StepCheckResult> EvaluateAsync(
-        PlaywrightBrowserService browser,
+        IAssertionPageReader browser,
         StepAssertion assertion,
         CancellationToken ct = default)
     {

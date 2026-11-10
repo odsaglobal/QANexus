@@ -11,7 +11,7 @@ public sealed class StepAgentDecision
     /// <summary>Short reasoning for this action (surfaced in logs and the step detail).</summary>
     public string? Thought { get; set; }
 
-    /// <summary>navigate | click | type | select | press | wait | finish</summary>
+    /// <summary>navigate | click | type | select | press | wait | ask | finish</summary>
     public string? Action { get; set; }
 
     /// <summary>The [ref=eN] id of the target element from the snapshot (for click/type/select).</summary>
@@ -35,4 +35,14 @@ public sealed class StepAgentDecision
 
     /// <summary>True when the agent concludes the step genuinely cannot be completed on this page.</summary>
     public bool StepFailed { get; set; }
+
+    /// <summary>
+    /// For <c>action: "ask"</c>: a single, concrete question for the user, asked because the page
+    /// admits two or more genuinely different readings of the step and picking one at random would
+    /// silently test the wrong thing.
+    /// </summary>
+    public string? Question { get; set; }
+
+    /// <summary>For <c>action: "ask"</c>: what the agent sees that it cannot choose between.</summary>
+    public string? QuestionContext { get; set; }
 }

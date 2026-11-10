@@ -27,17 +27,29 @@ public static class QaVerificationPrompts
           violated by the real number, that check FAILS.
         - Ordering/sorting: ascending/descending by price, name, rating, date — verify using the real
           values in their displayed order (e.g. prices should be non-increasing for "high to low").
-        - Navigation/URL: the URL, route, or page changed to the expected destination.
+        - Navigation/URL: the URL, route, or page changed to the expected destination. Real sites append
+          tracking/session query parameters (otracker, utm_*, marketplace, session ids, …) that the
+          expected result never mentions and no author could predict. Judge a URL expectation by whether
+          the meaningful part it names (path, and any query parameter it explicitly calls out) is present
+          — extra, unrelated parameters do not fail the check. Only require a byte-for-byte exact URL when
+          the expected result itself says "exactly"/"only"/"no other parameters".
         - Validation/errors: the correct error, empty-state, success or confirmation message appears.
         - Data correctness: shown values match what was entered/selected/expected.
 
-        IMPORTANT — fallback/fuzzy-match results are NOT an empty state: many real sites, when a search
-        finds nothing for the exact query, silently substitute a DIFFERENT query's results (e.g. matching
-        a substring/number in the query) and show banners like "Showing results for X instead" or "Did you
-        mean...". If the expected result requires zero results / an empty-state / "no results" message,
-        and the page instead shows ANY product/item cards — even under such a fallback banner — that is a
-        FAILURE, not a pass. Do not treat the presence of a "results for X instead" banner as satisfying an
-        empty-results expectation; check whether actual result/product cards are rendered on the page.
+        Decompose ONLY what the expected result's own wording implies — never add a condition it does not
+        state. In particular, "a/the results page is displayed" (or "is shown") is satisfied by a results
+        page/grid being present, FULL STOP; it does NOT implicitly also require the results to be relevant
+        to, or matching, the search term — that is a SEPARATE, stronger claim ("matching results",
+        "relevant results", "results for X" as a correctness claim, or an explicit relevance/empty-state
+        requirement) that must be present in the wording before you check it. Plenty of legitimate,
+        intentional test scenarios verify that an unmatched/nonsense query still renders A results page
+        (via fallback/substituted products) rather than an empty one — inventing an unstated "must actually
+        match the query" condition fails those scenarios for behaving exactly as designed.
+
+        A user-turn note titled "EMPTY-STATE GUIDANCE" is included ONLY when this specific expected result
+        claims zero results/an empty state — apply it exactly as written there, and otherwise ignore the
+        concept of emptiness entirely: a fallback/substituted, non-empty results page being shown is never,
+        on its own, a reason to fail a step whose expectation never promised the results would be relevant.
 
         Evaluate EACH condition against the concrete evidence. A condition passes ONLY with concrete
         supporting evidence. If evidence is missing, contradicted, or you are not certain, mark it FAILED
@@ -77,6 +89,18 @@ public static class QaVerificationPrompts
             ? "(no extra page data extracted)"
             : (pageData.Length > maxData ? pageData[..maxData] + "\n... (truncated)" : pageData);
 
+        var emptyStateNote = ClaimsEmptiness(expectedResult)
+            ? "\n\n" + """
+                EMPTY-STATE GUIDANCE (applies — this expected result claims zero results/an empty state):
+                Many real sites, when a search finds nothing for the exact query, silently substitute a
+                DIFFERENT query's results (e.g. matching a substring/number in the query) and show banners
+                like "Showing results for X instead" or "Did you mean...". If the page shows ANY
+                product/item cards — even under such a fallback banner — that is a FAILURE, not a pass. Do
+                not treat the presence of a "results for X instead" banner as satisfying an empty-results
+                expectation; check whether actual result/product cards are rendered on the page.
+                """
+            : string.Empty;
+
         return $"""
             Test step / goal: {stepAction}
             Expected result: {expectedResult}
@@ -86,10 +110,41 @@ public static class QaVerificationPrompts
             {data}
 
             Interactive elements snapshot:
-            {snap}
+            {snap}{emptyStateNote}
 
             Decompose the expected result into all atomic conditions and verify EACH against the evidence.
             Respond ONLY with the JSON verdict per the system rules.
             """;
+    }
+
+    /// <summary>
+    /// Whether an expected result text itself claims the result set will be empty/zero/absent — the only
+    /// case the empty-state guidance is relevant to. Decided in code, not left to the model's own
+    /// judgement, so a step whose expectation never mentions emptiness can never have that framing leak
+    /// into its verdict.
+    /// </summary>
+    private static bool ClaimsEmptiness(string expectedResult)
+    {
+        if (string.IsNullOrWhiteSpace(expectedResult))
+        {
+            return false;
+        }
+
+        string[] phrases =
+        [
+            "no result", "no results", "zero result", "empty state", "empty-state",
+            "no product", "no products", "no match", "no matches", "nothing found",
+            "not found", "no items", "no item found",
+        ];
+
+        foreach (var phrase in phrases)
+        {
+            if (expectedResult.Contains(phrase, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

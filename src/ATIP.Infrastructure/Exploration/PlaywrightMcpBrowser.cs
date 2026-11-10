@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using ATIP.Application.Common.Interfaces;
 using Microsoft.Extensions.Logging;
@@ -13,7 +14,7 @@ namespace ATIP.Infrastructure.Exploration;
 /// <c>browser_click</c>, <c>browser_type</c>, <c>browser_press_key</c>, <c>browser_take_screenshot</c> —
 /// exactly as Copilot/Claude drive a browser. The MCP server owns and installs its own Chromium.
 /// </summary>
-public sealed class PlaywrightMcpBrowser : IAsyncDisposable
+public sealed class PlaywrightMcpBrowser : IAsyncDisposable, IAssertionPageReader
 {
     private readonly ILogger _logger;
     private readonly string _command;
@@ -23,6 +24,9 @@ public sealed class PlaywrightMcpBrowser : IAsyncDisposable
 
     /// <summary>Best-effort current page URL, parsed from the latest navigate/snapshot output.</summary>
     public string CurrentUrl { get; private set; } = string.Empty;
+
+    /// <summary>Best-effort current document title, parsed from the latest navigate/snapshot output.</summary>
+    public string CurrentTitle { get; private set; } = string.Empty;
 
     public PlaywrightMcpBrowser(ILogger logger, string command, IList<string> args)
     {
@@ -459,6 +463,392 @@ public sealed class PlaywrightMcpBrowser : IAsyncDisposable
         (await CallAsync("browser_evaluate", new Dictionary<string, object?> { ["function"] = jsFunction }, ct)).Text;
 
     /// <summary>
+    /// Evaluates a JavaScript function against ONE snapshot element, which arrives as the function's
+    /// single argument. Used to interrogate the element an action is about to touch while its snapshot
+    /// handle is still valid.
+    /// </summary>
+    public async Task<string> EvaluateOnAsync(string element, string reference, string jsFunction, CancellationToken ct = default) =>
+        (await CallAsync(
+            "browser_evaluate",
+            new Dictionary<string, object?>
+            {
+                ["function"] = jsFunction,
+                ["element"] = element,
+                ["target"] = reference,
+            },
+            ct)).Text;
+
+    /// <summary>
+    /// Runs a JS function that returns an object and deserializes it, or returns null if it did not.
+    /// <para>
+    /// The MCP server echoes the SOURCE of the evaluated function back alongside its result, so the
+    /// response text contains the braces of our own code before it contains the braces of the answer.
+    /// Scanning for the first <c>{</c> therefore parses the script instead of the result. The function
+    /// concatenates its delimiter at runtime so that the token exists ONLY in the value MCP printed and
+    /// never in the echoed source, which makes the answer unambiguous to find.
+    /// </para>
+    /// </summary>
+    private async Task<JsonElement?> EvaluateJsonAsync(string jsBody, string? element, string? reference, CancellationToken ct)
+    {
+        // `body` must evaluate to the value being returned.
+        var js = element is null
+            ? $"() => {{ const D = 'ATIP' + '\\u00a7'; const v = (() => {{ {jsBody} }})(); return D + JSON.stringify(v) + D; }}"
+            : $"(el) => {{ const D = 'ATIP' + '\\u00a7'; const v = ((el) => {{ {jsBody} }})(el); return D + JSON.stringify(v) + D; }}";
+
+        string text;
+        try
+        {
+            text = element is null
+                ? await EvaluateAsync(js, ct)
+                : await EvaluateOnAsync(element, reference!, js, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            return null;
+        }
+
+        if (string.IsNullOrEmpty(text))
+        {
+            return null;
+        }
+
+        // The MCP server's response is markdown: a "### Result" section holding the JSON-STRING-quoted
+        // return value, followed by "### Ran Playwright code" which echoes our own source — and that
+        // echo contains the literal text "ATIP" too (inside the quoted, backslash-escaped source), just
+        // never the real delimiter character our function actually printed. Isolating the Result
+        // section first, then unescaping its JSON-string quoting, leaves a plain string in which the
+        // delimiter appears in exactly the two places we put it.
+        const string resultMarker = "### Result";
+        var resultStart = text.IndexOf(resultMarker, StringComparison.Ordinal);
+        if (resultStart < 0)
+        {
+            return null;
+        }
+
+        resultStart += resultMarker.Length;
+        var resultEnd = text.IndexOf("\n###", resultStart, StringComparison.Ordinal);
+        var section = (resultEnd < 0 ? text[resultStart..] : text[resultStart..resultEnd]).Trim();
+
+        string unescaped;
+        try
+        {
+            unescaped = section.StartsWith('"') && section.EndsWith('"')
+                ? JsonSerializer.Deserialize<string>(section) ?? section
+                : section;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        const string delimiter = "ATIP\u00a7";
+        var end = unescaped.LastIndexOf(delimiter, StringComparison.Ordinal);
+        if (end <= 0)
+        {
+            return null;
+        }
+
+        var start = unescaped.LastIndexOf(delimiter, end - 1, StringComparison.Ordinal);
+        if (start < 0)
+        {
+            return null;
+        }
+
+        var payload = unescaped[(start + delimiter.Length)..end];
+
+        try
+        {
+            using var doc = JsonDocument.Parse(payload);
+            return doc.RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<string>?> ReadValuesAsync(
+        string selector,
+        string source = "text",
+        int max = 200,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(selector))
+        {
+            return null;
+        }
+
+        var body = $$"""
+            const selector = {{JsonSerializer.Serialize(selector)}};
+            const source = {{JsonSerializer.Serialize(source)}};
+            const max = {{max}};
+            let nodes;
+            try { nodes = document.querySelectorAll(selector); }
+            catch { return { ok: false, values: [] }; }
+
+            const rendered = (el) => {
+              if (!(el instanceof Element)) return false;
+              const style = window.getComputedStyle(el);
+              if (style.visibility === 'hidden' || style.display === 'none') return false;
+              return el.getClientRects().length > 0;
+            };
+
+            const out = [];
+            for (const el of nodes) {
+              if (out.length >= max) break;
+              if (!rendered(el)) continue;
+              if (source === 'value') {
+                if (el.tagName === 'SELECT') {
+                  const opt = el.selectedOptions && el.selectedOptions[0];
+                  out.push(((opt ? (opt.textContent || opt.value) : el.value) || '').trim());
+                } else if ('value' in el) {
+                  out.push(String(el.value == null ? '' : el.value).trim());
+                } else {
+                  out.push((el.textContent || '').replace(/\s+/g, ' ').trim());
+                }
+              } else {
+                out.push((el.textContent || '').replace(/\s+/g, ' ').trim());
+              }
+            }
+            return { ok: true, values: out };
+            """;
+
+        var result = await EvaluateJsonAsync(body, null, null, ct);
+        if (result is not { } root
+            || !root.TryGetProperty("ok", out var ok)
+            || ok.ValueKind != JsonValueKind.True)
+        {
+            return null;
+        }
+
+        return root.TryGetProperty("values", out var values) && values.ValueKind == JsonValueKind.Array
+            ? values.EnumerateArray().Select(v => v.GetString() ?? string.Empty).ToList()
+            : new List<string>();
+    }
+
+    /// <inheritdoc />
+    public async Task<string> GetAssertionContextAsync(int maxGroups = 120, CancellationToken ct = default)
+    {
+        var body = $$"""
+            const maxGroups = {{maxGroups}};
+            const rendered = (el) => {
+              const style = window.getComputedStyle(el);
+              if (style.visibility === 'hidden' || style.display === 'none') return false;
+              return el.getClientRects().length > 0;
+            };
+
+            // Prefer attributes a developer chose over ones a bundler generated: hashed class names
+            // change on every deploy and would produce an assertion that rots immediately.
+            const unstable = (s) => !s || s.length < 2 || /\d{3}/.test(s) || /^(css|sc|jsx)-/.test(s);
+
+            const selectorFor = (el) => {
+              for (const attr of ['data-test', 'data-testid', 'data-qa']) {
+                const v = el.getAttribute && el.getAttribute(attr);
+                if (v) return '[' + attr + '="' + v + '"]';
+              }
+              if (el.id && !unstable(el.id)) return '#' + el.id;
+              // Prefer semantic attributes over classnames: short, framework-generated class hashes
+              // (e.g. CSS-module suffixes like "nw1UBF") don't contain 3+ digits or a css-/sc-/jsx-
+              // prefix, so they slip past the 'unstable' filter below despite regenerating on every
+              // deploy or session — a compiled selector built from one would drift the next run.
+              const name = el.getAttribute && el.getAttribute('name');
+              if (name) return el.tagName.toLowerCase() + '[name="' + name + '"]';
+              const placeholder = el.getAttribute && el.getAttribute('placeholder');
+              if (placeholder) return el.tagName.toLowerCase() + '[placeholder="' + placeholder + '"]';
+              const ariaLabel = el.getAttribute && el.getAttribute('aria-label');
+              if (ariaLabel) return '[aria-label="' + ariaLabel + '"]';
+              const cls = (typeof el.className === 'string' ? el.className : '')
+                .trim().split(/\s+/).filter(c => !unstable(c)).slice(0, 2);
+              return el.tagName.toLowerCase() + cls.map(c => '.' + c).join('');
+            };
+
+            const groups = new Map();
+            for (const el of document.querySelectorAll('*')) {
+              const tag = el.tagName;
+              const isField = tag === 'SELECT' || tag === 'INPUT' || tag === 'TEXTAREA';
+              // Leaf elements carry the page's real values; wrappers just repeat their children.
+              if (!isField && el.children.length > 0) continue;
+              if (!rendered(el)) continue;
+
+              let value;
+              if (tag === 'SELECT') {
+                const opt = el.selectedOptions && el.selectedOptions[0];
+                value = ((opt ? (opt.textContent || opt.value) : el.value) || '').trim();
+              } else if (isField) {
+                value = String(el.value == null ? '' : el.value).trim();
+              } else {
+                value = (el.textContent || '').replace(/\s+/g, ' ').trim();
+              }
+              if (!value) continue;
+
+              const key = (isField ? 'value|' : 'text|') + selectorFor(el);
+              if (!groups.has(key)) groups.set(key, []);
+              groups.get(key).push(value.length > 40 ? value.slice(0, 40) + '\u2026' : value);
+            }
+
+            const out = [];
+            // Repeated groups first: those are the lists ordering and count checks target.
+            const sorted = [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
+            for (const [key, values] of sorted.slice(0, maxGroups)) {
+              const parts = key.split('|');
+              out.push(parts[0] + ' ' + parts[1] + ' (' + values.length + ' match' + (values.length === 1 ? '' : 'es') + ') -> ' + values.slice(0, 3).join(' | '));
+            }
+            return { lines: out };
+            """;
+
+        var result = await EvaluateJsonAsync(body, null, null, ct);
+        if (result is not { } root || !root.TryGetProperty("lines", out var lines) || lines.ValueKind != JsonValueKind.Array)
+        {
+            return string.Empty;
+        }
+
+        return string.Join("\n", lines.EnumerateArray().Select(v => v.GetString() ?? string.Empty));
+    }
+
+    /// <summary>
+    /// Derives durable ways to address the element behind a snapshot handle, ordered best-first, and
+    /// keeps only those that are PROVEN to match that exact element and nothing else on the page.
+    /// <para>
+    /// This is what lets one exploration arm every later run. A snapshot <c>ref</c> is a handle into the
+    /// current page render and is meaningless in a fresh browser, so an exploration that recorded only
+    /// refs leaves the next run with nothing to aim at. Resolving each candidate back to the live DOM
+    /// here — and discarding any that match zero or several nodes — means a locator is stored only once
+    /// it has been demonstrated to be unambiguous, rather than because it looked plausible.
+    /// </para>
+    /// </summary>
+    /// <returns>Proven (strategy, value) pairs, best-first. Empty when the element has no stable identity.</returns>
+    public async Task<IReadOnlyList<(string Strategy, string Value)>> DescribeElementAsync(
+        string element,
+        string reference,
+        CancellationToken ct = default)
+    {
+        const string body = """
+            if (!el || !(el instanceof Element)) return { candidates: [] };
+
+            const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+            const unstable = (s) => !s || s.length < 2 || /\d{3}/.test(s) || /^(css|sc|jsx)-/.test(s);
+            const cssEscape = (s) => (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\]/g, '\\$&');
+
+            // The control that actually carries the behaviour is often an ancestor of the node the
+            // accessibility tree points at (the snapshot resolves to a <span> inside a <button>).
+            // Storing the span yields a locator that resolves but does nothing when clicked.
+            const interactive = el.closest('a,button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=radio],[role=tab],[role=menuitem],[onclick]') || el;
+
+            const out = [];
+            const add = (strategy, value) => { if (value && norm(value).length > 0) out.push({ strategy, value: String(value) }); };
+
+            for (const node of [interactive, el]) {
+              for (const attr of ['data-test', 'data-testid', 'data-qa']) {
+                const v = node.getAttribute && node.getAttribute(attr);
+                if (v) add('TestId', v);
+              }
+              if (node.id && !unstable(node.id)) add('CSS', '#' + cssEscape(node.id));
+              const name = node.getAttribute && node.getAttribute('name');
+              if (name && !unstable(name)) add('CSS', node.tagName.toLowerCase() + '[name="' + cssEscape(name) + '"]');
+              const aria = node.getAttribute && node.getAttribute('aria-label');
+              if (aria) add('ARIA', norm(aria));
+              const ph = node.getAttribute && node.getAttribute('placeholder');
+              if (ph) add('Placeholder', norm(ph));
+              const title = node.getAttribute && node.getAttribute('title');
+              if (title) add('Title', norm(title));
+              const alt = node.getAttribute && node.getAttribute('alt');
+              if (alt) add('AltText', norm(alt));
+            }
+
+            // Role + accessible name is the most portable semantic locator and survives restyling.
+            const tag = interactive.tagName.toLowerCase();
+            const explicitRole = interactive.getAttribute && interactive.getAttribute('role');
+            const roleFor = () => {
+              if (explicitRole) return explicitRole;
+              if (tag === 'a') return 'link';
+              if (tag === 'button') return 'button';
+              if (tag === 'select') return 'combobox';
+              if (tag === 'textarea') return 'textbox';
+              if (tag === 'input') {
+                const t = (interactive.getAttribute('type') || 'text').toLowerCase();
+                if (t === 'submit' || t === 'button' || t === 'reset') return 'button';
+                if (t === 'checkbox') return 'checkbox';
+                if (t === 'radio') return 'radio';
+                return 'textbox';
+              }
+              return null;
+            };
+            const role = roleFor();
+            const accName = norm(
+              (interactive.getAttribute && (interactive.getAttribute('aria-label') || interactive.getAttribute('title')))
+              || interactive.innerText
+              || interactive.textContent
+              || (interactive.getAttribute && interactive.getAttribute('value'))
+              || '');
+            const shortName = accName.length > 80 ? accName.slice(0, 80) : accName;
+            if (role && shortName) {
+              add('Role', role.charAt(0).toUpperCase() + role.slice(1) + ':' + shortName);
+            }
+
+            // Prove each candidate before offering it: a locator that matches nothing, or matches many
+            // things, is worse than none because it fails or acts on the wrong element later.
+            const matches = (c) => {
+              try {
+                if (c.strategy === 'TestId') {
+                  return document.querySelectorAll('[data-test="' + cssEscape(c.value) + '"],[data-testid="' + cssEscape(c.value) + '"],[data-qa="' + cssEscape(c.value) + '"]');
+                }
+                if (c.strategy === 'CSS') return document.querySelectorAll(c.value);
+                if (c.strategy === 'ARIA') return document.querySelectorAll('[aria-label="' + cssEscape(c.value) + '"]');
+                if (c.strategy === 'Placeholder') return document.querySelectorAll('[placeholder="' + cssEscape(c.value) + '"]');
+                if (c.strategy === 'Title') return document.querySelectorAll('[title="' + cssEscape(c.value) + '"]');
+                if (c.strategy === 'AltText') return document.querySelectorAll('[alt="' + cssEscape(c.value) + '"]');
+                return null;
+              } catch { return null; }
+            };
+
+            const proven = [];
+            const seen = new Set();
+            for (const c of out) {
+              const sig = c.strategy + '|' + c.value;
+              if (seen.has(sig)) continue;
+              seen.add(sig);
+
+              // Role locators are resolved by the run engine's own accessible-name matching rather
+              // than by a CSS query, so they are carried through on the element's own evidence.
+              if (c.strategy === 'Role') { proven.push(c); continue; }
+
+              const found = matches(c);
+              if (!found || found.length !== 1) continue;
+              if (found[0] !== interactive && found[0] !== el) continue;
+              proven.push(c);
+            }
+
+            return { candidates: proven, role: role || '', name: shortName };
+            """;
+
+        var result = await EvaluateJsonAsync(body, element, reference, ct);
+        if (result is not { } root
+            || !root.TryGetProperty("candidates", out var candidates)
+            || candidates.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<(string, string)>();
+        }
+
+        var list = new List<(string, string)>();
+        foreach (var candidate in candidates.EnumerateArray())
+        {
+            var strategy = candidate.TryGetProperty("strategy", out var s) ? s.GetString() : null;
+            var value = candidate.TryGetProperty("value", out var v) ? v.GetString() : null;
+            if (!string.IsNullOrWhiteSpace(strategy) && !string.IsNullOrWhiteSpace(value))
+            {
+                list.Add((strategy!, value!));
+            }
+        }
+
+        return list;
+    }
+
+    /// <summary>
     /// Centres a snapshot element in the viewport, best-effort.
     /// <para>
     /// Step screenshots capture the VIEWPORT, not the full page, so a control far down a long document
@@ -582,6 +972,12 @@ public sealed class PlaywrightMcpBrowser : IAsyncDisposable
         if (match.Success)
         {
             CurrentUrl = match.Groups[1].Value;
+        }
+
+        var title = Regex.Match(text, @"Page Title:\s*(.*)");
+        if (title.Success)
+        {
+            CurrentTitle = title.Groups[1].Value.Trim();
         }
     }
 

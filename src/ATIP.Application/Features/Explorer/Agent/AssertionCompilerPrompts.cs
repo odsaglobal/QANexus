@@ -39,6 +39,11 @@ public static class AssertionCompilerPrompts
         RULES — these decide whether the compiled test is worth anything:
         - ONLY use a selector that appears in the digest. Never invent one, never guess at a class name
           you have not been shown. If no digest line can check a condition, omit that assertion.
+        - The assertion's "source" MUST be copied from the <source> label of the digest line you took
+          the selector from (e.g. a line starting "value input[placeholder=…]" means source "value" —
+          NEVER "text", even though the expected result says "contains the text"). An input/select/
+          textarea holds its content in its value, not in DOM text, so reading it as "text" finds
+          nothing. Match the digest line, not the wording of the expected result.
         - Choose the selector whose match count fits the condition. A condition about "the list of
           prices" needs the selector matching many prices, not the one matching a single element.
         - Ordering ("sorted high to low", "cheapest first") -> sorted_desc / sorted_asc on the selector
@@ -54,6 +59,12 @@ public static class AssertionCompilerPrompts
           no such line, omit the assertion; do not settle for `contains`.
         - Something must NOT be shown -> not_exists, or not_contains on the region it would appear in.
         - Prefer the most specific stable selector: [data-test=...] over #id over tag.class.
+        - A URL condition ("navigates to https://…/search?q=laptop") almost never means the URL is
+          EXACTLY that string: real sites append tracking/session query parameters
+          (otracker, utm_*, marketplace, session ids, …) the expected result never mentions and that
+          vary between visits. Use "contains" with the meaningful fragment (the path plus any query
+          parameter the expected result explicitly names), never "equals", unless the expected result
+          itself says "exactly"/"only".
         - Do NOT assert on incidental page furniture (headers, nav, cookie banners) that the expected
           result does not mention.
 

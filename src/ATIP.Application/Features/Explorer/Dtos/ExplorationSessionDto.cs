@@ -21,6 +21,8 @@ public sealed record ExplorationSessionDto
     public DateTimeOffset? StartedAtUtc { get; init; }
     public DateTimeOffset? CompletedAtUtc { get; init; }
     public string? ErrorMessage { get; init; }
+    public string? PendingQuestion { get; init; }
+    public string? PendingQuestionContext { get; init; }
     public required DateTimeOffset CreatedAtUtc { get; init; }
 
     public static ExplorationSessionDto FromEntity(ExplorationSession s) => new()
@@ -42,6 +44,8 @@ public sealed record ExplorationSessionDto
         StartedAtUtc = s.StartedAtUtc,
         CompletedAtUtc = s.CompletedAtUtc,
         ErrorMessage = s.ErrorMessage,
+        PendingQuestion = s.PendingQuestion,
+        PendingQuestionContext = s.PendingQuestionContext,
         CreatedAtUtc = s.CreatedAtUtc,
     };
 }

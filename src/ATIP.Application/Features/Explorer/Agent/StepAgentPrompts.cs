@@ -36,10 +36,12 @@ public static class StepAgentPrompts
         Return ONLY a JSON object — no markdown, no commentary:
         {
           "thought": "one short sentence: what you're doing and why",
-          "action": "navigate|click|type|select|press|wait|finish",
+          "action": "navigate|click|type|select|press|wait|ask|finish",
           "ref": "eN — REQUIRED for click/type/select; must exist in the snapshot",
           "target": "the element's testid if it has one, else its exact visible name (click/type/select); the url/path for navigate; the key name for press",
           "value": "text to type (type), or the EXACT option label copied from (options: …) (select)",
+          "question": "REQUIRED for ask — one specific question for the user",
+          "questionContext": "for ask — the competing options you can see, quoted from the snapshot",
           "expectedResult": "what a tester should now observe, as a verifiable assertion",
           "stepComplete": false,
           "stepFailed": false
@@ -53,7 +55,31 @@ public static class StepAgentPrompts
                      uses "select", never "click".
         - "press"  — keyboard keys; put the key (e.g. "Enter") in "target". Handy to submit a form.
         - "wait"   — let the page load/settle, then observe again.
+        - "ask"    — put ONE question to the user and pause until they answer (see below).
         - "finish" — the goal is met ("stepComplete": true) or is genuinely impossible ("stepFailed": true).
+
+        ── ASKING THE USER ──────────────────────────────────────────────────
+        You may pause and ask when the page offers SEVERAL genuinely different readings of the step and
+        choosing wrong would test the wrong thing. A recorded step is replayed unattended for months, so
+        a lucky guess is worse than a question: it produces a test that passes while checking something
+        nobody asked for.
+
+        Ask ONLY when ALL of these hold:
+        1. You can name two or more CONCRETE candidates, quoted from the snapshot (not "something else
+           might exist").
+        2. They lead to materially different outcomes — different pages, different data, or a different
+           commitment (e.g. "Buy now" vs "Add to cart").
+        3. Nothing in the step, its expected result or the business context decides between them.
+
+        Do NOT ask about anything you can settle yourself:
+        - which of two wordings means the same action — just pick it and say so in "thought";
+        - whether an element exists — look at the snapshot;
+        - permission to continue, or confirmation that you are on track.
+        Never ask the same question twice: an answer you have already been given is settled fact.
+
+        Phrase the question as a QA analyst would to a product owner: name the options and what each
+        would do (e.g. 'The results show both "Sort by Price" and "Sort by Relevance (Price shown)".
+        The step says "sort by price" — should I use "Sort by Price — Low to High"?').
 
         ── CHOOSING THE EXACT ELEMENT ───────────────────────────────────────
         - "target" MUST be copied VERBATIM from the snapshot — a real testid or a real visible name
@@ -120,7 +146,8 @@ public static class StepAgentPrompts
         string history,
         int turn,
         int maxTurns,
-        string? businessContext = null)
+        string? businessContext = null,
+        string? answeredQuestions = null)
     {
         const int maxSnapshotChars = 14_000;
         const int maxContextChars = 4_000;
@@ -154,6 +181,7 @@ public static class StepAgentPrompts
             Current URL: {currentUrl}
             Turn: {turn} of {maxTurns}
             {context}
+            {(string.IsNullOrWhiteSpace(answeredQuestions) ? "" : $"Questions already answered this session (settled \u2014 do not ask again):\n{answeredQuestions}\n")}
             Page snapshot (choose targets ONLY from these elements):
             {snap}
 

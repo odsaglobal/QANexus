@@ -145,39 +145,10 @@ public sealed class LocatorResolver : ILocatorResolver
     /// <summary>
     /// The repository key for a target: its explicit key, else a slug of its human descriptor.
     /// </summary>
-    private static string? RepositoryKey(ElementTarget target)
-    {
-        if (!string.IsNullOrWhiteSpace(target.ElementKey))
-        {
-            return target.ElementKey!.Trim();
-        }
-
-        if (string.IsNullOrWhiteSpace(target.Descriptor))
-        {
-            return null;
-        }
-
-        var slug = new string(target.Descriptor!
-            .Trim()
-            .ToLowerInvariant()
-            .Select(c => char.IsLetterOrDigit(c) ? c : '-')
-            .ToArray());
-
-        while (slug.Contains("--", StringComparison.Ordinal))
-        {
-            slug = slug.Replace("--", "-", StringComparison.Ordinal);
-        }
-
-        slug = slug.Trim('-');
-
-        // Long enough to stay readable and distinct, short enough to sit in an index.
-        return slug.Length switch
-        {
-            0 => null,
-            > 120 => slug[..120].TrimEnd('-'),
-            _ => slug
-        };
-    }
+    private static string? RepositoryKey(ElementTarget target) =>
+        !string.IsNullOrWhiteSpace(target.ElementKey)
+            ? target.ElementKey!.Trim()
+            : ElementKeys.From(target.Descriptor);
 
     private static string Signature(LocatorCandidate candidate) =>
         $"{candidate.Strategy}::{candidate.Value}";

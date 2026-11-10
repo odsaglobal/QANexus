@@ -477,6 +477,9 @@ namespace ATIP.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<string>("AnsweredQuestionsJson")
+                        .HasColumnType("text");
+
                     b.Property<DateTimeOffset?>("CompletedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -516,6 +519,18 @@ namespace ATIP.Infrastructure.Persistence.Migrations
 
                     b.Property<int>("PagesDiscovered")
                         .HasColumnType("integer");
+
+                    b.Property<string>("PendingQuestion")
+                        .HasColumnType("text");
+
+                    b.Property<string>("PendingQuestionAnswer")
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("PendingQuestionAskedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PendingQuestionContext")
+                        .HasColumnType("text");
 
                     b.Property<Guid>("ProjectId")
                         .HasColumnType("uuid");

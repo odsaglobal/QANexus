@@ -46,7 +46,7 @@ internal static class RecordedActionMapper
             }
         }
 
-        if (NeedsElement(kind))
+        if (NeedsElement(kind, recorded))
         {
             action.Target = new ElementTarget
             {
@@ -117,14 +117,14 @@ internal static class RecordedActionMapper
     /// An unrecognised verb is not element-based: it never reaches a driver, so a locator is not
     /// what is wrong with it.
     /// </summary>
-    public static bool TargetsElement(string? kind) =>
-        TryParseKind(kind, out var parsed) && NeedsElement(parsed);
+    public static bool TargetsElement(RecordedStepAction recorded) =>
+        TryParseKind(recorded.Kind, out var parsed) && NeedsElement(parsed, recorded);
 
     /// <summary>
     /// Kinds whose verbs act on a page element. The rest address the session, the network or a
     /// database, and giving them a target would make a missing descriptor look like a failure.
     /// </summary>
-    private static bool NeedsElement(TestActionKind kind) => kind switch
+    private static bool NeedsElement(TestActionKind kind, RecordedStepAction recorded) => kind switch
     {
         TestActionKind.Click or TestActionKind.DoubleClick or TestActionKind.RightClick
             or TestActionKind.Hover or TestActionKind.Type or TestActionKind.Clear
@@ -132,9 +132,12 @@ internal static class RecordedActionMapper
             or TestActionKind.Upload or TestActionKind.DragAndDrop or TestActionKind.ScrollTo
             or TestActionKind.WaitFor => true,
 
-        // Press is element-scoped when a field is named and page-level otherwise; the driver's
-        // element path is used only when a descriptor exists.
-        TestActionKind.Press => false,
+        // A press recorded against a field carries the key in Value and the field's descriptor in
+        // Target, so it is element-scoped and replays via the locator (and can be re-located like any
+        // other field action). The legacy shape — Target holds the bare key, Value is empty — has no
+        // element identity at all: it targets whatever has focus on the page, and there is nothing to
+        // re-locate. Value emptiness is what tells the two apart; Target is non-empty in both.
+        TestActionKind.Press => !string.IsNullOrWhiteSpace(recorded.Value),
 
         _ => false
     };
