@@ -2,7 +2,7 @@
 /**
  * Seed the 10 Flipkart guest (no-login) test cases into TestRail.
  *
- * Mirrors the scenarios created in QANexus (tools/flipkart/seed-scenarios.py) so the same
+ * Mirrors the scenarios created in Patterns.ai (tools/flipkart/seed-scenarios.py) so the same
  * suite exists in both systems. Uses TestRail's "Test Case (Steps)" template:
  *   custom_preconds           -> preconditions
  *   custom_steps_separated[]  -> { content, expected } ordered steps
@@ -202,7 +202,7 @@ async function resolveSectionId() {
   if (!projectId) {
     const project = await trPost('add_project', {
       name: PROJECT_NAME,
-      announcement: 'Seeded Flipkart guest (no-login) test cases for QANexus.',
+      announcement: 'Seeded Flipkart guest (no-login) test cases for Patterns.ai.',
       show_announcement: true,
       suite_mode: 1,
     });
@@ -220,7 +220,7 @@ async function resolveSectionId() {
     ...(suiteId ? { suite_id: suiteId } : {}),
   });
   console.log(`Created section ${SECTION_NAME} (id ${section.id}) in project ${projectId}.`);
-  console.log(`\n>>> TestRail Project ID for QANexus sync: ${projectId}\n`);
+  console.log(`\n>>> TestRail Project ID for Patterns.ai sync: ${projectId}\n`);
   return { projectId, sectionId: section.id, reused: false };
 }
 
@@ -253,7 +253,7 @@ async function main() {
     });
     console.log(`  ✓ C${created.id}  ${c.title}`);
   }
-  console.log('\nDone. In QANexus → Scenarios → "Sync from TestRail", enter the project id above to import.');
+  console.log('\nDone. In Patterns.ai → Scenarios → "Sync from TestRail", enter the project id above to import.');
 }
 
 main().catch((err) => {

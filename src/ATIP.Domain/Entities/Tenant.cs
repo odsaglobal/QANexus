@@ -23,6 +23,9 @@ public class Tenant : AuditableEntity, ISoftDeletable
     /// </summary>
     public bool IsOnboarded { get; set; }
 
+    /// <summary>How many times Run re-runs a failed scenario in a fresh browser session (0 = never).</summary>
+    public int FailedTestRetries { get; set; }
+
     public bool IsActive { get; set; } = true;
 
     public bool IsDeleted { get; set; }

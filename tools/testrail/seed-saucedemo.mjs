@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Seed SauceDemo test cases into TestRail so they can be synced into QANexus and explored.
+ * Seed SauceDemo test cases into TestRail so they can be synced into Patterns.ai and explored.
  *
  * TestRail API: https://support.testrail.com/hc/en-us/articles/7077196481428-Introduction-to-the-TestRail-API
  *
@@ -25,7 +25,7 @@
  * The cases use TestRail's "Test Case (Steps)" template fields:
  *   custom_preconds           -> preconditions
  *   custom_steps_separated[]  -> { content, expected } ordered steps
- * These map directly to how QANexus imports TestRail cases (see TestRailClient).
+ * These map directly to how Patterns.ai imports TestRail cases (see TestRailClient).
  */
 
 const BASE_URL = normalizeBaseUrl(required('TESTRAIL_BASE_URL'));
@@ -105,7 +105,7 @@ async function trPost(pathAndQuery, body) {
 }
 
 // SauceDemo (https://www.saucedemo.com) test cases. Steps are written as
-// browser actions so the QANexus explorer can execute them against the app.
+// browser actions so the Patterns.ai explorer can execute them against the app.
 const cases = [
   {
     title: 'Successful login with standard_user',
@@ -188,7 +188,7 @@ async function resolveSectionId() {
   if (!projectId) {
     const project = await trPost('add_project', {
       name: PROJECT_NAME,
-      announcement: 'Seeded SauceDemo test cases for QANexus exploration.',
+      announcement: 'Seeded SauceDemo test cases for Patterns.ai exploration.',
       show_announcement: true,
       suite_mode: 1, // single repository
     });
@@ -208,7 +208,7 @@ async function resolveSectionId() {
     ...(suiteId ? { suite_id: suiteId } : {}),
   });
   console.log(`Created section ${SECTION_NAME} (id ${section.id}) in project ${projectId}.`);
-  console.log(`\n>>> TestRail Project ID for QANexus sync: ${projectId}\n`);
+  console.log(`\n>>> TestRail Project ID for Patterns.ai sync: ${projectId}\n`);
   return section.id;
 }
 
@@ -224,7 +224,7 @@ async function main() {
     });
     console.log(`  ✓ C${created.id}  ${c.title}`);
   }
-  console.log('Done. In QANexus → Scenarios → "Sync from TestRail", enter the TestRail project id');
+  console.log('Done. In Patterns.ai → Scenarios → "Sync from TestRail", enter the TestRail project id');
   console.log('shown above to import these as scenarios you can explore.');
 }
 

@@ -23,6 +23,18 @@ public sealed class StepAgentDecision
     /// <summary>Text to type (for "type"), or the exact option label to choose (for "select").</summary>
     public string? Value { get; set; }
 
+    /// <summary>For "drag": the [ref=eN] of the element to drop onto.</summary>
+    public string? DestinationRef { get; set; }
+
+    /// <summary>For "drag": the visible name of the drop target, used to replay the drop.</summary>
+    public string? DestinationTarget { get; set; }
+
+    /// <summary>For "ask": one concrete question for the person watching the run.</summary>
+    public string? Question { get; set; }
+
+    /// <summary>For "ask": the competing options the agent sees, quoted from the snapshot.</summary>
+    public string? QuestionContext { get; set; }
+
     /// <summary>
     /// What a tester should observe once this action succeeds, phrased as a verifiable assertion
     /// ("The Products page is displayed with 6 items"). Exploration stores this on the proposed step so

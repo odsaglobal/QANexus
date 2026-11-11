@@ -849,13 +849,13 @@ function ScenarioDetailPanel({ projectId, scenario, activeSession }: {
     queryFn: () => getLatestScenarioRun(projectId, scenario.id),
     refetchInterval: (query) => {
       const s = query.state.data?.status;
-      return s === 'Pending' || s === 'Running' ? 2500 : false;
+      return s === 'Pending' || s === 'Running' || s === 'AwaitingInput' ? 2500 : false;
     },
   });
   const run = runQuery.data;
   // The session list is the more reliable signal: the latest-run record only appears once the agent has
   // written something, so a just-started exploration would otherwise look idle for its first few seconds.
-  const running = Boolean(activeSession) || run?.status === 'Pending' || run?.status === 'Running';
+  const running = Boolean(activeSession) || run?.status === 'Pending' || run?.status === 'Running' || run?.status === 'AwaitingInput';
   const liveId = activeSession?.id ?? (running ? run?.sessionId ?? null : null);
 
   const stopMutation = useMutation({

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Square, X, ZoomIn, Globe } from 'lucide-react';
+import { Loader2, Square, X, ZoomIn, Globe, MessageCircleQuestion, Send } from 'lucide-react';
 import { useExplorationStream } from '../../lib/useExplorationStream';
 import type { ExplorationLiveTab } from '../../lib/useExplorationStream';
-import { cancelExploration, fileUrl, listSessionSteps } from '../../api/explorer';
+import { answerExplorationQuestion, cancelExploration, fileUrl, getExplorationSession, listSessionSteps } from '../../api/explorer';
+import { getErrorMessage } from '../../lib/apiClient';
 import { cn } from '../../lib/utils';
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
@@ -148,10 +149,27 @@ export function LiveExplorationDialog({ sessionId, projectId, title, mode = 'exp
     },
   });
 
+  const awaitingInput = status?.status === 'AwaitingInput';
+  const pendingQuery = useQuery({
+    queryKey: ['exploration-session', projectId, sessionId, 'question'],
+    queryFn: () => getExplorationSession(projectId, sessionId!),
+    enabled: open && !!sessionId && awaitingInput,
+    refetchInterval: awaitingInput ? 3000 : false,
+  });
+  const pendingQuestion = awaitingInput ? pendingQuery.data?.pendingQuestion : null;
+  const [answer, setAnswer] = useState('');
+  const answerMutation = useMutation({
+    mutationFn: (text: string) => answerExplorationQuestion(projectId, sessionId!, text),
+    onSuccess: () => {
+      setAnswer('');
+      void pendingQuery.refetch();
+    },
+  });
+
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-[96vw] w-[96vw] max-h-[94vh] overflow-y-auto">
-        <DialogHeader>
+      <DialogContent className="max-w-[96vw] w-[96vw] max-h-[94vh] flex flex-col overflow-hidden">
+        <DialogHeader className="shrink-0">
           <DialogTitle className="flex items-center gap-2">
             <span className={cn('h-2 w-2 rounded-full', terminal ? 'bg-gray-400' : connected ? 'bg-green-500 animate-pulse' : 'bg-gray-300')} />
             {verb}: {title}
@@ -176,6 +194,44 @@ export function LiveExplorationDialog({ sessionId, projectId, title, mode = 'exp
             )}
           </DialogTitle>
         </DialogHeader>
+
+        {/* Only the body scrolls, so the title, Stop and close stay in view. */}
+        <div className="-mx-6 -mb-6 min-h-0 flex-1 space-y-4 overflow-y-auto px-6 pb-6">
+        {pendingQuestion && (
+          <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 space-y-2" role="alert">
+            <div className="flex items-start gap-2">
+              <MessageCircleQuestion className="h-5 w-5 shrink-0 text-amber-600 mt-0.5" />
+              <div className="min-w-0 space-y-1">
+                <p className="text-sm font-semibold text-amber-900">The agent needs your input to continue</p>
+                <p className="text-sm text-amber-900 whitespace-pre-wrap">{pendingQuestion}</p>
+                {pendingQuery.data?.pendingQuestionContext && (
+                  <p className="text-xs text-amber-800/80 whitespace-pre-wrap">{pendingQuery.data.pendingQuestionContext}</p>
+                )}
+              </div>
+            </div>
+            <form
+              className="flex flex-wrap items-center gap-2 pl-7"
+              onSubmit={(e) => { e.preventDefault(); if (answer.trim()) answerMutation.mutate(answer.trim()); }}
+            >
+              <Button type="button" size="sm" variant="outline" className="h-8" disabled={answerMutation.isPending}
+                onClick={() => answerMutation.mutate('Yes')}>Yes</Button>
+              <Button type="button" size="sm" variant="outline" className="h-8" disabled={answerMutation.isPending}
+                onClick={() => answerMutation.mutate('No')}>No</Button>
+              <input
+                value={answer}
+                onChange={(e) => setAnswer(e.target.value)}
+                placeholder="Or type a specific answer…"
+                aria-label="Answer the agent's question"
+                className="h-8 min-w-[240px] flex-1 rounded-md border border-amber-300 bg-white px-2 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+              />
+              <Button type="submit" size="sm" className="h-8" disabled={!answer.trim() || answerMutation.isPending}>
+                {answerMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5 mr-1" />}
+                Answer
+              </Button>
+            </form>
+            {answerMutation.isError && <p className="pl-7 text-xs text-red-600">{getErrorMessage(answerMutation.error)}</p>}
+          </div>
+        )}
 
         <div className="grid gap-3 lg:grid-cols-[1.7fr_1fr] lg:items-start">
           {/* Live browser stream (falls back to the last persisted step screenshot once streaming ends) */}
@@ -336,6 +392,7 @@ export function LiveExplorationDialog({ sessionId, projectId, title, mode = 'exp
               </div>
             </div>
           </div>
+        </div>
         </div>
 
         {zoomSrc && (

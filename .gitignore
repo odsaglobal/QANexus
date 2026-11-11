@@ -24,6 +24,7 @@ appsettings.*.Local.json
 # machine state rather than source. Ignoring the directory (not the file extensions) keeps
 # real app assets such as frontend/public and frontend/src/assets committable.
 src/ATIP.Api/storage/
+src/ATIP.Api/test-files/
 
 # Playwright artifacts
 .playwright-mcp/

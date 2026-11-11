@@ -1,7 +1,7 @@
 # TestRail — SauceDemo seed
 
 `seed-saucedemo.mjs` creates a set of SauceDemo test cases in your TestRail
-instance so you can then **Sync from TestRail** inside QANexus (Scenarios tab)
+instance so you can then **Sync from TestRail** inside Patterns.ai (Scenarios tab)
 and explore/run them.
 
 ## 1. Prepare TestRail
@@ -19,7 +19,7 @@ node tools/testrail/seed-saucedemo.mjs
 ```
 This adds 7 cases (logins, add-to-cart, sort, full checkout, checkout validation).
 
-## 3. Configure the QANexus backend
+## 3. Configure the Patterns.ai backend
 Set the TestRail connection in `src/ATIP.Api/appsettings.Development.json`:
 ```json
 "TestRail": {
@@ -30,7 +30,7 @@ Set the TestRail connection in `src/ATIP.Api/appsettings.Development.json`:
 ```
 Restart the API.
 
-## 4. Sync into QANexus
+## 4. Sync into Patterns.ai
 Open the **saucedemo** project → **Scenarios** → **Sync from TestRail**, enter the
 TestRail **project id** (and optionally suite/section id), then Sync. The cases
 appear as scenarios you can **Explore** (goal-driven) or **Run** (execute steps).

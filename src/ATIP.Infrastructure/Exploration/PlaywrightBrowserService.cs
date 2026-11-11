@@ -74,7 +74,7 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
           const nameOf = (el) => {
             let n = el.getAttribute('aria-label') || '';
             if (!n) n = (el.textContent || '').replace(/\s+/g, ' ').trim();
-            if (!n) n = el.getAttribute('placeholder') || el.getAttribute('name') || el.getAttribute('title') || (el.value || '');
+            if (!n) n = el.getAttribute('placeholder') || el.getAttribute('name') || el.getAttribute('title') || (el.type === 'password' ? '' : (el.value || ''));
             // Icon-only controls (cart, menu, close) carry no accessible text, or carry a meaningless
             // one such as a badge count ("1"). A stable test id is far more useful to the agent and is
             // directly replayable, so prefer it whenever the visible name is empty or too weak to act on.
@@ -254,13 +254,27 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
     private Func<string, Task>? _onFrame;
 
     /// <summary>
-    /// Count of requests currently in flight on whichever page is active. Tracked via request
+    /// Requests in flight on whichever page is active, with the tick they started. Tracked via request
     /// events rather than a single <c>WaitForLoadStateAsync(NetworkIdle)</c> call so
     /// <see cref="WaitForPageSettledAsync"/> can tell "quiet between two bursts" apart from
     /// "actually done" — a login click regularly fires its auth call, goes briefly quiet, then
     /// fires a second call for the profile/tenant data before the page reacts.
     /// </summary>
-    private int _inFlightRequests;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<IRequest, long> _inFlight = new();
+
+    // Requests pending longer than this are beacons, long-polls or streams that never finish.
+    private const long LongLivedRequestMs = 4000;
+
+    private static readonly HashSet<string> SettleResourceTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "document", "xhr", "fetch", "script",
+    };
+
+    private int ActiveRequests()
+    {
+        var now = Environment.TickCount64;
+        return _inFlight.Values.Count(started => now - started < LongLivedRequestMs);
+    }
 
     public string CurrentUrl => _page?.Url ?? string.Empty;
     public string CurrentTitle { get; private set; } = string.Empty;
@@ -356,7 +370,7 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
     private async Task OpenFreshPageAsync()
     {
         _frameSelectors.Clear();
-        _inFlightRequests = 0;
+        _inFlight.Clear();
 
         _page = await _browser!.NewPageAsync(new BrowserNewPageOptions
         {
@@ -430,15 +444,20 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
 
     /// <summary>
     /// Tracks in-flight requests on <paramref name="page"/> so <see cref="WaitForPageSettledAsync"/>
-    /// can wait for the network to actually go quiet instead of guessing from a single snapshot in
-    /// time. Requests from every page share one counter — an exact per-tab count is not the point,
-    /// only "is anything happening anywhere right now".
+    /// can wait for the network to actually go quiet. Only requests that can change what the page
+    /// shows are counted; images, fonts, media and analytics pings never block a settle.
     /// </summary>
     private void WireRequestTracking(IPage page)
     {
-        page.Request += (_, _) => Interlocked.Increment(ref _inFlightRequests);
-        page.RequestFinished += (_, _) => Interlocked.Decrement(ref _inFlightRequests);
-        page.RequestFailed += (_, _) => Interlocked.Decrement(ref _inFlightRequests);
+        page.Request += (_, request) =>
+        {
+            if (SettleResourceTypes.Contains(request.ResourceType))
+            {
+                _inFlight[request] = Environment.TickCount64;
+            }
+        };
+        page.RequestFinished += (_, request) => _inFlight.TryRemove(request, out long _);
+        page.RequestFailed += (_, request) => _inFlight.TryRemove(request, out long _);
     }
 
     /// <summary>Moves the live screencast to <paramref name="page"/>, swallowing any failure.</summary>
@@ -735,6 +754,8 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
                             if (el.tagName === 'SELECT') {
                                 const opt = el.selectedOptions && el.selectedOptions[0];
                                 out.push(((opt ? (opt.textContent || opt.value) : el.value) || '').trim());
+                            } else if (el.type === 'password') {
+                                out.push('\u2022'.repeat(String(el.value ?? '').length));
                             } else if ('value' in el) {
                                 out.push(String(el.value ?? '').trim());
                             } else {
@@ -810,6 +831,8 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
                         if (tag === 'SELECT') {
                             const opt = el.selectedOptions && el.selectedOptions[0];
                             value = ((opt ? (opt.textContent || opt.value) : el.value) || '').trim();
+                        } else if (isField && el.type === 'password') {
+                            value = '\u2022'.repeat(String(el.value == null ? '' : el.value).length);
                         } else if (isField) {
                             value = String(el.value == null ? '' : el.value).trim();
                         } else {
@@ -887,7 +910,7 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
                 continue;
             }
 
-            if (readyState == "complete" && url == lastUrl && Volatile.Read(ref _inFlightRequests) <= 0)
+            if (readyState == "complete" && url == lastUrl && ActiveRequests() == 0)
             {
                 stable++;
             }
@@ -896,17 +919,6 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
                 stable = 0;
                 lastUrl = url;
             }
-        }
-
-        try
-        {
-            await _page.WaitForLoadStateAsync(
-                LoadState.NetworkIdle,
-                new PageWaitForLoadStateOptions { Timeout = 2000 });
-        }
-        catch
-        {
-            // Best-effort: read whatever has rendered so far.
         }
     }
 
@@ -1137,6 +1149,57 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
         })()
         """;
 
+    /// <summary>The visible text of a modal currently covering the page, or null when nothing blocks it.</summary>
+    public async Task<string?> DetectBlockingPopupAsync(CancellationToken ct = default)
+    {
+        if (_page is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return BlockingPopup.ParseDetect(await _page.EvaluateAsync<string>(BlockingPopup.Script, "detect"));
+        }
+        catch (PlaywrightException)
+        {
+            // The page navigated mid-check; there is no popup on a page that is going away.
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Closes a modal covering the page: Escape first, then its own close control. Only ever touches an
+    /// element detected as a blocking modal, so it is safe to call before every replayed step.
+    /// </summary>
+    /// <returns>The popup's text and whether it is gone, or null when no popup was in the way.</returns>
+    public async Task<(string Text, bool Cleared)?> DismissBlockingPopupAsync(CancellationToken ct = default)
+    {
+        var text = await DetectBlockingPopupAsync(ct);
+        if (text is null || _page is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            await _page.Keyboard.PressAsync("Escape");
+            await _page.WaitForTimeoutAsync(300);
+            if (await DetectBlockingPopupAsync(ct) is null)
+            {
+                return (text, true);
+            }
+
+            await _page.EvaluateAsync<string>(BlockingPopup.Script, "close");
+            await _page.WaitForTimeoutAsync(500);
+            return (text, await DetectBlockingPopupAsync(ct) is null);
+        }
+        catch (PlaywrightException)
+        {
+            return (text, await DetectBlockingPopupAsync(ct) is null);
+        }
+    }
+
     /// <summary>
     /// Best-effort dismissal of unexpected popups/modals/overlays that block interaction. Tries the
     /// Escape key first, then clicks a detected close control. Returns how many overlays were dismissed.
@@ -1234,7 +1297,7 @@ public sealed partial class PlaywrightBrowserService : IAsyncDisposable
             }
 
             var name = await locator.EvaluateAsync<string?>(
-                "el => (el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('name') || (el.innerText || el.value || '').trim()).slice(0, 120)");
+                "el => (el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('name') || (el.innerText || (el.type === 'password' ? '' : el.value) || '').trim()).slice(0, 120)");
             return string.IsNullOrWhiteSpace(name) ? null : name.Trim();
         }
         catch

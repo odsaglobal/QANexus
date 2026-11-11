@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Trash2, Loader2, KeyRound, Eye, EyeOff } from 'lucide-react';
+import { Plus, Trash2, Loader2, KeyRound, Eye, EyeOff, X, CheckCircle2, XCircle, ShieldCheck } from 'lucide-react';
 import { getEnvironmentVariables, updateEnvironmentVariables } from '../../api/environments';
+import { getSecretStoreStatus, verifySecretReference, type SecretReferenceCheck } from '../../api/secretStore';
 import type { EnvironmentVariable } from '../../api/types';
 import { getErrorMessage } from '../../lib/apiClient';
 import { Button } from '../../components/ui/button';
@@ -11,12 +12,20 @@ import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from '../../components/ui/dialog';
 
-type FieldType = 'text' | 'secret';
-interface Row { key: string; value: string; type: FieldType }
+type FieldType = 'text' | 'secret' | 'vault';
+// `stored`: the server holds a secret we never receive back. `dirty`: the user typed a replacement.
+interface Row {
+  key: string; value: string; type: FieldType; stored: boolean; dirty: boolean;
+  check?: SecretReferenceCheck | 'pending';
+}
+
+const emptyRow = (): Row => ({ key: '', value: '', type: 'text', stored: false, dirty: false });
+const toFieldType = (t?: string): FieldType => (t === 'secret' || t === 'vault' ? t : 'text');
 
 /**
  * Postman-style environment variables editor. Variables are key/value pairs bound as {{key}}
- * during Explore/Run against this environment. Secret fields are masked with a show/hide toggle.
+ * during Explore/Run against this environment. Secret values are encrypted server-side and
+ * write-only: they are never sent back, only replaced or cleared.
  */
 export function EnvironmentVariablesDialog({
   projectId, environmentId, environmentName, onClose,
@@ -39,25 +48,51 @@ export function EnvironmentVariablesDialog({
   useEffect(() => {
     if (!data) return;
     setRows(data.length > 0
-      ? data.map((v) => ({ key: v.key, value: v.value ?? '', type: v.type === 'secret' ? 'secret' : 'text' }))
-      : [{ key: '', value: '', type: 'text' }]);
+      ? data.map((v) => ({
+          key: v.key,
+          value: v.value ?? '',
+          type: toFieldType(v.type),
+          stored: v.type === 'secret' && !!v.hasValue,
+          dirty: false,
+        }))
+      : [emptyRow()]);
   }, [data]);
+
+  const usesVault = rows.some((r) => r.type === 'vault');
+  const { data: vaultStatus } = useQuery({
+    queryKey: ['secret-store-status'],
+    queryFn: getSecretStoreStatus,
+    enabled: usesVault,
+    staleTime: 30_000,
+  });
 
   const setRow = (idx: number, patch: Partial<Row>) =>
     setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
-  const addRow = () => setRows((prev) => [...prev, { key: '', value: '', type: 'text' }]);
+  const addRow = () => setRows((prev) => [...prev, emptyRow()]);
   const removeRow = (idx: number) => setRows((prev) => prev.filter((_, i) => i !== idx));
   const toggleReveal = (idx: number) => setRevealed((prev) => ({ ...prev, [idx]: !prev[idx] }));
+  const testReference = async (idx: number, reference: string) => {
+    setRow(idx, { check: 'pending' });
+    try {
+      setRow(idx, { check: await verifySecretReference(reference.trim()) });
+    } catch (e) {
+      setRow(idx, { check: { ok: false, error: getErrorMessage(e) } });
+    }
+  };
 
   const saveMutation = useMutation({
     mutationFn: () => {
       const cleaned = rows
-        .map((r) => ({ key: r.key.trim(), value: r.value, type: r.type }))
+        .map((r) => ({ ...r, key: r.key.trim() }))
         .filter((r) => r.key !== '');
       if (new Set(cleaned.map((r) => r.key)).size !== cleaned.length) {
         throw new Error('Variable keys must be unique.');
       }
-      const variables: EnvironmentVariable[] = cleaned.map((r) => ({ key: r.key, value: r.value, type: r.type }));
+      const variables: EnvironmentVariable[] = cleaned.map((r) => ({
+        key: r.key,
+        value: r.type === 'secret' && !r.dirty ? null : r.value,
+        type: r.type,
+      }));
       return updateEnvironmentVariables(projectId, environmentId, variables);
     },
     onSuccess: () => {
@@ -79,6 +114,7 @@ export function EnvironmentVariablesDialog({
             </DialogTitle>
             <p className="text-sm text-muted-foreground">
               Key/value pairs bound as <code className="text-xs">{'{{key}}'}</code> when you Explore or Run against this environment.
+              Type <strong>Vault</strong> reads the value from HashiCorp Vault at run time — enter <code className="text-xs">path#field</code>.
             </p>
           </DialogHeader>
 
@@ -89,6 +125,12 @@ export function EnvironmentVariablesDialog({
               Keys are shared across every environment in this project — adding a key here adds it (empty) to all
               others, so scenarios won&rsquo;t fail when run against a different environment. Only the values differ per environment.
             </Alert>
+
+            {usesVault && vaultStatus && !(vaultStatus.configured && vaultStatus.authenticated) && (
+              <Alert severity="warning" className="text-xs">
+                {vaultStatus.provider} is not ready: {vaultStatus.detail ?? 'unknown error'} Vault variables will not resolve during runs.
+              </Alert>
+            )}
 
             {isLoading ? (
               <div className="py-10 text-center text-muted-foreground text-sm">
@@ -104,7 +146,10 @@ export function EnvironmentVariablesDialog({
                 </div>
                 {rows.map((row, idx) => {
                   const isSecret = row.type === 'secret';
+                  const isVault = row.type === 'vault';
                   const show = revealed[idx];
+                  const keepsStored = isSecret && row.stored && !row.dirty;
+                  const check = row.check;
                   return (
                     <div key={idx} className="grid grid-cols-[1fr_1fr_120px_auto] gap-0 group">
                       <div className="border-b border-border p-0">
@@ -119,11 +164,39 @@ export function EnvironmentVariablesDialog({
                         <input
                           type={isSecret && !show ? 'password' : 'text'}
                           value={row.value}
-                          onChange={(e) => setRow(idx, { value: e.target.value })}
-                          placeholder={isSecret ? '••••••••' : 'alice@example.com'}
-                          className="w-full bg-transparent px-3 py-2 pr-9 text-sm outline-none focus:bg-violet-50"
+                          onChange={(e) => setRow(idx, { value: e.target.value, dirty: true, check: undefined })}
+                          placeholder={keepsStored ? 'Saved — type to replace' : isSecret ? '••••••••' : isVault ? 'demo/saucedemo#password' : 'alice@example.com'}
+                          autoComplete="new-password"
+                          title={check && check !== 'pending' && !check.ok ? check.error ?? undefined : undefined}
+                          className={`w-full bg-transparent px-3 py-2 pr-9 text-sm outline-none focus:bg-violet-50 ${isVault ? 'font-mono' : ''}`}
                         />
-                        {isSecret && (
+                        {isVault && (
+                          <button
+                            type="button"
+                            disabled={!row.value.trim() || check === 'pending'}
+                            onClick={() => testReference(idx, row.value)}
+                            aria-label="Test vault reference"
+                            title={check && check !== 'pending' ? (check.ok ? 'Resolves in Vault' : check.error ?? 'Not resolved') : 'Test that this reference resolves'}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground disabled:opacity-40"
+                          >
+                            {check === 'pending' ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              : check?.ok ? <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
+                              : check ? <XCircle className="h-3.5 w-3.5 text-destructive" />
+                              : <ShieldCheck className="h-3.5 w-3.5" />}
+                          </button>
+                        )}
+                        {keepsStored && (
+                          <button
+                            type="button"
+                            onClick={() => setRow(idx, { value: '', dirty: true, stored: false })}
+                            aria-label="Clear saved secret"
+                            title="Clear saved secret"
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-destructive"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                        {isSecret && !keepsStored && (
                           <button
                             type="button"
                             onClick={() => toggleReveal(idx)}
@@ -135,13 +208,14 @@ export function EnvironmentVariablesDialog({
                         )}
                       </div>
                       <div className="border-b border-l border-border flex items-center px-1">
-                        <Select value={row.type} onValueChange={(v) => setRow(idx, { type: v as FieldType })}>
+                        <Select value={row.type} onValueChange={(v) => setRow(idx, { type: v as FieldType, check: undefined })}>
                           <SelectTrigger className="h-8 border-0 shadow-none focus:ring-0 text-xs">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="text">Text</SelectItem>
                             <SelectItem value="secret">Secret</SelectItem>
+                            <SelectItem value="vault">Vault</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>

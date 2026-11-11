@@ -37,4 +37,10 @@ public sealed class QaVerdict
 
     /// <summary>Per-condition breakdown so testers see exactly what was validated.</summary>
     public List<QaCheck> Checks { get; set; } = new();
+
+    /// <summary>
+    /// Set only when a condition cannot be judged from ANY available evidence: one yes/no question a
+    /// human tester can answer to settle it.
+    /// </summary>
+    public string? Question { get; set; }
 }

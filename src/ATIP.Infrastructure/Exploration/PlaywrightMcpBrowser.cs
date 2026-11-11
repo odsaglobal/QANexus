@@ -18,17 +18,33 @@ public sealed class PlaywrightMcpBrowser : IAsyncDisposable
     private readonly ILogger _logger;
     private readonly string _command;
     private readonly IList<string> _args;
+    private readonly string? _fileRoot;
+    private string? _ownedTempRoot;
+    private readonly string? _ownedOutputDir;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private McpClient? _client;
 
     /// <summary>Best-effort current page URL, parsed from the latest navigate/snapshot output.</summary>
     public string CurrentUrl { get; private set; } = string.Empty;
 
-    public PlaywrightMcpBrowser(ILogger logger, string command, IList<string> args)
+    /// <param name="fileRoot">
+    /// The only directory the MCP server may read files from (test-file uploads). Without one it
+    /// defaults to its working directory — the whole application folder — so an empty temp folder is used.
+    /// </param>
+    public PlaywrightMcpBrowser(ILogger logger, string command, IList<string> args, string? fileRoot = null)
     {
         _logger = logger;
         _command = command;
-        _args = args;
+        _fileRoot = fileRoot;
+
+        // The server writes snapshots/screenshots under its root by default, i.e. into the test files.
+        _args = new List<string>(args);
+        if (!_args.Contains("--output-dir"))
+        {
+            _ownedOutputDir = Directory.CreateTempSubdirectory("patternsai-mcp-out-").FullName;
+            _args.Add("--output-dir");
+            _args.Add(_ownedOutputDir);
+        }
     }
 
     public async Task InitializeAsync(CancellationToken ct = default)
@@ -40,7 +56,19 @@ public sealed class PlaywrightMcpBrowser : IAsyncDisposable
             Arguments = _args,
         });
 
-        _client = await McpClient.CreateAsync(transport, cancellationToken: ct);
+        var root = _fileRoot ?? (_ownedTempRoot = Directory.CreateTempSubdirectory("patternsai-mcp-").FullName);
+        var options = new McpClientOptions
+        {
+            Handlers = new McpClientHandlers
+            {
+                RootsHandler = (_, _) => ValueTask.FromResult(new ListRootsResult
+                {
+                    Roots = [new Root { Uri = new Uri(root).AbsoluteUri, Name = "test-files" }],
+                }),
+            },
+        };
+
+        _client = await McpClient.CreateAsync(transport, options, cancellationToken: ct);
         _logger.LogInformation("Playwright MCP server started ({Command} {Args}).", _command, string.Join(' ', _args));
     }
 
@@ -86,6 +114,117 @@ public sealed class PlaywrightMcpBrowser : IAsyncDisposable
 
     public async Task WaitAsync(double seconds, CancellationToken ct = default) =>
         await CallAsync("browser_wait_for", new Dictionary<string, object?> { ["time"] = seconds }, ct);
+
+    public async Task<bool> DoubleClickAsync(string element, string reference, CancellationToken ct = default) =>
+        (await CallAsync("browser_click", new Dictionary<string, object?> { ["element"] = element, ["target"] = reference, ["doubleClick"] = true }, ct)).Ok;
+
+    public async Task<bool> RightClickAsync(string element, string reference, CancellationToken ct = default) =>
+        (await CallAsync("browser_click", new Dictionary<string, object?> { ["element"] = element, ["target"] = reference, ["button"] = "right" }, ct)).Ok;
+
+    public async Task<bool> HoverAsync(string element, string reference, CancellationToken ct = default) =>
+        (await CallAsync("browser_hover", new Dictionary<string, object?> { ["element"] = element, ["target"] = reference }, ct)).Ok;
+
+    public async Task<bool> DragAsync(string startElement, string startReference, string endElement, string endReference, CancellationToken ct = default) =>
+        (await CallAsync("browser_drag", new Dictionary<string, object?>
+        {
+            ["startElement"] = startElement,
+            ["startTarget"] = startReference,
+            ["endElement"] = endElement,
+            ["endTarget"] = endReference,
+        }, ct)).Ok;
+
+    /// <summary>
+    /// Clicks the control that opens the file chooser, then answers it with <paramref name="paths"/>.
+    /// The paths must lie under the file root, which the MCP server enforces as well.
+    /// </summary>
+    public async Task<(bool Ok, string Detail)> UploadFilesAsync(string element, string reference, IReadOnlyList<string> paths, CancellationToken ct = default)
+    {
+        var (clicked, clickText) = await CallAsync("browser_click", new Dictionary<string, object?> { ["element"] = element, ["target"] = reference }, ct);
+        if (!clicked || !clickText.Contains("File chooser", StringComparison.OrdinalIgnoreCase))
+        {
+            return (false, "the control did not open a file chooser — target the upload button or file input");
+        }
+
+        var (uploaded, uploadText) = await CallAsync("browser_file_upload", new Dictionary<string, object?> { ["paths"] = paths.ToArray() }, ct);
+        if (!uploaded)
+        {
+            // A file chooser left open blocks every later tool call, so cancel it.
+            await CallAsync("browser_file_upload", new Dictionary<string, object?>(), ct);
+            return (false, $"the file chooser rejected the files: {uploadText.Split('\n').FirstOrDefault(l => l.Contains("Error", StringComparison.OrdinalIgnoreCase))}");
+        }
+
+        return (true, "files attached");
+    }
+
+    public async Task<bool> NavigateBackAsync(CancellationToken ct = default)
+    {
+        var (ok, text) = await CallAsync("browser_navigate_back", null, ct);
+        UpdateUrlFrom(text);
+        return ok;
+    }
+
+    /// <summary>Answers a native alert/confirm/prompt that is currently open.</summary>
+    public async Task<bool> HandleDialogAsync(bool accept, string? promptText, CancellationToken ct = default)
+    {
+        var args = new Dictionary<string, object?> { ["accept"] = accept };
+        if (!string.IsNullOrEmpty(promptText))
+        {
+            args["promptText"] = promptText;
+        }
+
+        return (await CallAsync("browser_handle_dialog", args, ct)).Ok;
+    }
+
+    /// <summary>Waits until text appears (or, with <paramref name="gone"/>, disappears) on the page.</summary>
+    public async Task<bool> WaitForTextAsync(string text, bool gone, CancellationToken ct = default) =>
+        (await CallAsync("browser_wait_for", new Dictionary<string, object?> { [gone ? "textGone" : "text"] = text }, ct)).Ok;
+
+    public async Task<bool> SelectTabAsync(int index, CancellationToken ct = default) =>
+        (await CallAsync("browser_tabs", new Dictionary<string, object?> { ["action"] = "select", ["index"] = index }, ct)).Ok;
+
+    /// <summary>
+    /// Sets a checkbox, radio or switch to the wanted state, clicking only when it differs — a blind
+    /// click would untick a box that was already ticked.
+    /// </summary>
+    public async Task<bool> SetCheckedAsync(string element, string reference, bool wanted, CancellationToken ct = default)
+    {
+        var js = $$"""
+            (el) => {
+              const input = el.matches('input') ? el : (el.querySelector('input[type=checkbox],input[type=radio]') || el);
+              const state = () => 'checked' in input ? input.checked : input.getAttribute('aria-checked') === 'true';
+              if (state() !== {{(wanted ? "true" : "false")}}) (input.matches('input') ? input : el).click();
+              return state() === {{(wanted ? "true" : "false")}};
+            }
+            """;
+        var (ok, text) = await CallAsync("browser_evaluate", new Dictionary<string, object?>
+        {
+            ["element"] = element,
+            ["target"] = reference,
+            ["function"] = js,
+        }, ct);
+        return ok && ResultIsTrue(text);
+    }
+
+    /// <summary>
+    /// Scrolls the main scrollable area by most of a viewport. Only useful for content that loads on
+    /// scroll (infinite lists, lazy sections); everything already rendered is in the snapshot.
+    /// </summary>
+    public async Task<bool> ScrollPageAsync(bool down, CancellationToken ct = default)
+    {
+        var js = $$"""
+            () => {
+              const dir = {{(down ? "1" : "-1")}};
+              const scrollers = [document.scrollingElement, ...document.querySelectorAll('*')]
+                .filter(e => e && e.scrollHeight > e.clientHeight + 40 && /(auto|scroll)/.test(getComputedStyle(e).overflowY) || e === document.scrollingElement);
+              const target = scrollers.sort((a, b) => b.clientHeight - a.clientHeight)[0] || document.scrollingElement;
+              const before = target.scrollTop;
+              target.scrollBy(0, dir * Math.max(200, target.clientHeight * 0.8));
+              return target.scrollTop !== before;
+            }
+            """;
+        var (ok, text) = await CallAsync("browser_evaluate", new Dictionary<string, object?> { ["function"] = js }, ct);
+        return ok && ResultIsTrue(text);
+    }
 
     /// <summary>
     /// Ref-free click by an element's human descriptor (accessible name / visible text / value), located
@@ -445,9 +584,52 @@ public sealed class PlaywrightMcpBrowser : IAsyncDisposable
         }
     }
 
+    // The tool echoes the evaluated source after "### Ran Playwright code", and that source usually
+    // contains the word "true" — so only the "### Result" section may be inspected.
     private static bool ResultIsTrue(string? evalResult) =>
-        !string.IsNullOrEmpty(evalResult)
-        && System.Text.RegularExpressions.Regex.IsMatch(evalResult, @"(^|\W)true(\W|$)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        System.Text.RegularExpressions.Regex.IsMatch(ResultSection(evalResult), @"(^|\W)true(\W|$)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    internal static string ResultSection(string? evalResult)
+    {
+        if (string.IsNullOrEmpty(evalResult))
+        {
+            return string.Empty;
+        }
+
+        var start = evalResult.IndexOf("### Result", StringComparison.Ordinal);
+        if (start < 0)
+        {
+            return evalResult;
+        }
+
+        var section = evalResult[(start + "### Result".Length)..];
+        var next = section.IndexOf("###", StringComparison.Ordinal);
+        return next >= 0 ? section[..next] : section;
+    }
+
+    /// <summary>The visible text of a modal currently covering the page, or null when nothing blocks it.</summary>
+    public async Task<string?> DetectBlockingPopupAsync(CancellationToken ct = default) =>
+        BlockingPopup.ParseDetect(ResultSection(await EvaluateAsync($"() => ({BlockingPopup.Script})('detect')", ct)));
+
+    /// <summary>Closes the covering modal (Escape, then its close control). Returns true once it is gone.</summary>
+    public async Task<bool> DismissBlockingPopupAsync(CancellationToken ct = default)
+    {
+        if (await DetectBlockingPopupAsync(ct) is null)
+        {
+            return true;
+        }
+
+        await PressKeyAsync("Escape", ct);
+        await WaitAsync(0.3, ct);
+        if (await DetectBlockingPopupAsync(ct) is null)
+        {
+            return true;
+        }
+
+        await EvaluateAsync($"() => ({BlockingPopup.Script})('close')", ct);
+        await WaitAsync(0.5, ct);
+        return await DetectBlockingPopupAsync(ct) is null;
+    }
 
     /// <summary>
     /// Evaluates a JavaScript function in the page and returns its serialized result text.
@@ -599,6 +781,23 @@ public sealed class PlaywrightMcpBrowser : IAsyncDisposable
             }
 
             _client = null;
+        }
+
+        foreach (var dir in new[] { _ownedTempRoot, _ownedOutputDir })
+        {
+            if (dir is null)
+            {
+                continue;
+            }
+
+            try
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+            catch
+            {
+                // best effort
+            }
         }
 
         _gate.Dispose();

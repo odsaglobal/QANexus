@@ -7,4 +7,7 @@ public sealed class StorageOptions
 
     /// <summary>Root directory for the local file store (development). Relative paths are allowed.</summary>
     public string RootPath { get; set; } = "storage";
+
+    /// <summary>Folder for files tests may upload. Kept outside <see cref="RootPath"/> on purpose.</summary>
+    public string TestFilesPath { get; set; } = "test-files";
 }

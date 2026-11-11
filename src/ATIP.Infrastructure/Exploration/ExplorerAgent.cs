@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using ATIP.Application.Common.Exceptions;
 using ATIP.Application.Common.Interfaces;
+using ATIP.Application.Common.Security;
 using ATIP.Application.Common.Utilities;
 using ATIP.Application.Engine.Contracts;
 using ATIP.Application.Engine.Model;
@@ -13,6 +14,7 @@ using ATIP.Application.Features.Scenarios.Dtos;
 using ATIP.Domain.Entities;
 using ATIP.Domain.Enums;
 using ATIP.Infrastructure.Configuration;
+using ATIP.Infrastructure.Ai;
 using ATIP.Infrastructure.Engine;
 using ATIP.Infrastructure.Engine.Web;
 using Microsoft.EntityFrameworkCore;
@@ -41,7 +43,26 @@ public sealed class ExplorerAgent : IExplorerAgent
     private readonly ITestEngine _engine;
     private readonly WebBrowserSession _browserSession;
     private readonly ILocatorRepository _locatorRepository;
+    private readonly ISecretProtector _secretProtector;
+    private readonly ISecretStore _secretStore;
+    private readonly ITestFileStore _testFiles;
+    private readonly int _snapshotBudget;
+
+    // Names of this project's test files, offered to the agent for "upload".
+    private IReadOnlyList<string> _testFileNames = [];
+
+    // URL + visible counts after each step of the current scenario, for "compared to before" checks.
+    private readonly List<string> _observations = [];
+
+    private ExplorationSession? _session;
+
+    // The field the last replayed "type" filled, so a following bare "press Enter" goes to it.
+    private string? _lastTypedTarget;
+    private readonly SecretRedactor _redactor = new();
     private readonly ILogger<ExplorerAgent> _logger;
+
+    // Variables whose values must never reach a prompt, log or stored result.
+    private readonly HashSet<string> _secretKeys = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Postman-style variables resolved from the environment's test data. Any <c>{{key}}</c> token in a
@@ -52,6 +73,9 @@ public sealed class ExplorerAgent : IExplorerAgent
 
     /// <summary>Project business-context document text injected into exploration missions (per run).</summary>
     private string _businessContext = string.Empty;
+    private int _failedTestRetries;
+    // Steps whose failed expectation was already put to the tester in this session.
+    private readonly HashSet<Guid> _mismatchAsked = new();
 
     /// <summary>
     /// Whether the scenario currently being RUN allows AI self-healing. Set per scenario in
@@ -69,6 +93,10 @@ public sealed class ExplorerAgent : IExplorerAgent
     private static readonly System.Text.RegularExpressions.Regex VariableTokenRegex =
         new(@"\{\{\s*([^{}]+?)\s*\}\}", System.Text.RegularExpressions.RegexOptions.Compiled);
 
+    // A token as written by the redactor; the agent may echo it back as a value to type.
+    private static readonly System.Text.RegularExpressions.Regex RedactedTokenRegex =
+        new(@"\[secret:([^\[\]]+)\]", System.Text.RegularExpressions.RegexOptions.Compiled);
+
     public ExplorerAgent(
         IApplicationDbContext db,
         ILlmClient llm,
@@ -79,10 +107,18 @@ public sealed class ExplorerAgent : IExplorerAgent
         ITestEngine engine,
         WebBrowserSession browserSession,
         ILocatorRepository locatorRepository,
+        ISecretProtector secretProtector,
+        ISecretStore secretStore,
+        ITestFileStore testFiles,
+        Microsoft.Extensions.Options.IOptions<LlmOptions> llmOptions,
         ILogger<ExplorerAgent> logger)
     {
         _db = db;
-        _llm = llm;
+        _llm = new RedactingLlmClient(llm, _redactor);
+        _secretProtector = secretProtector;
+        _secretStore = secretStore;
+        _testFiles = testFiles;
+        _snapshotBudget = Math.Clamp(llmOptions.Value.MaxSnapshotChars, 3000, 60000);
         _fileStorage = fileStorage;
         _clock = clock;
         _live = live;
@@ -95,6 +131,7 @@ public sealed class ExplorerAgent : IExplorerAgent
 
     public async Task RunAsync(ExplorationSession session, CancellationToken cancellationToken = default)
     {
+        _session = session;
         var environment = await _db.Environments
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(e => e.Id == session.EnvironmentId, cancellationToken)
@@ -106,9 +143,18 @@ public sealed class ExplorerAgent : IExplorerAgent
 
         // Bind Postman-style variables from this environment's test data ({{key}} → value).
         _variables = await LoadEnvironmentVariablesAsync(session, cancellationToken);
+        foreach (var key in _secretKeys)
+        {
+            _redactor.Add(key, _variables.GetValueOrDefault(key));
+        }
 
         // Load the project's business-context documents so the AI understands the app's domain.
         _businessContext = await ScenarioBucket.LoadBusinessContextAsync(_db, session.ProjectId, cancellationToken);
+        _testFileNames = _testFiles.List(session.ProjectId).Select(f => f.Name).ToList();
+        _failedTestRetries = Math.Clamp(
+            await _db.Tenants.IgnoreQueryFilters().Where(t => t.Id == session.TenantId).Select(t => t.FailedTestRetries).FirstOrDefaultAsync(cancellationToken),
+            0,
+            3);
 
         // Identity + variables for anything routed through the generic engine. The environment's
         // test data doubles as the engine's starting variables, so a step can already interpolate
@@ -206,7 +252,7 @@ public sealed class ExplorerAgent : IExplorerAgent
         {
             _logger.LogError(ex, "Exploration session {SessionId} failed.", session.Id);
             session.Status = ExplorationStatus.Failed;
-            session.ErrorMessage = ex.Message[..Math.Min(ex.Message.Length, 500)];
+            session.ErrorMessage = Truncate(_redactor.Redact(ex.Message), 500);
             await PublishLogAsync(session, $"{Noun(session)} failed: {session.ErrorMessage}", "error", CancellationToken.None);
         }
         finally
@@ -254,7 +300,7 @@ public sealed class ExplorerAgent : IExplorerAgent
         await PublishStatusAsync(session, baseUrl, ct);
         await PublishLogAsync(session, "Starting Playwright MCP server…", "info", ct);
 
-        await using var mcp = new PlaywrightMcpBrowser(_logger, _mcp.Command, _mcp.Arguments);
+        await using var mcp = new PlaywrightMcpBrowser(_logger, _mcp.Command, _mcp.Arguments, _testFiles.DirectoryFor(session.ProjectId));
         try
         {
             await mcp.InitializeAsync(ct);
@@ -331,7 +377,7 @@ public sealed class ExplorerAgent : IExplorerAgent
         {
             _logger.LogError(ex, "MCP scenario run failed for session {SessionId}.", session.Id);
             session.Status = ExplorationStatus.Failed;
-            session.ErrorMessage = ex.Message[..Math.Min(ex.Message.Length, 500)];
+            session.ErrorMessage = Truncate(_redactor.Redact(ex.Message), 500);
             await PublishLogAsync(session, $"{Noun(session)} failed: {session.ErrorMessage}", "error", CancellationToken.None);
         }
         finally
@@ -461,6 +507,348 @@ public sealed class ExplorerAgent : IExplorerAgent
         }
     }
 
+    private static readonly Regex ObservedCountPattern = new(
+        @"Showing[^\n""\\]{0,80}|\b\d[\d.,]*\s*(?:results?|items?|products?|records?|entries|matches)\b|\bof\s+\d[\d.,]*\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+        TimeSpan.FromSeconds(1));
+
+    /// <summary>
+    /// Notes the URL and visible counts after a step, so a later check like "fewer results than the
+    /// unfiltered search" can compare against a page that is no longer on screen.
+    /// </summary>
+    private void RememberObservation(string label, string? url, string? pageData)
+    {
+        var text = pageData ?? string.Empty;
+        var echo = text.IndexOf("### Ran Playwright code", StringComparison.Ordinal);
+        if (echo >= 0)
+        {
+            text = text[..echo];
+        }
+
+        var facts = ObservedCountPattern.Matches(text)
+            .Select(m => m.Value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(4)
+            .ToList();
+
+        var entry = $"- {label}: URL {url}" + (facts.Count > 0 ? $"; {string.Join("; ", facts)}" : string.Empty);
+        if (_observations.Count > 0 && _observations[^1] == entry)
+        {
+            return;
+        }
+
+        _observations.Add(entry);
+        if (_observations.Count > 15)
+        {
+            _observations.RemoveAt(0);
+        }
+    }
+
+    // Recorded on actions taken INSIDE a popup, so replay leaves that popup open for them.
+    private const string PopupOption = "popup";
+    private const string PopupInteract = "interact";
+
+    private sealed record PopupDecision(bool Dismiss, string? Instruction);
+
+    // One decision per popup per session: asked the first time it appears, reused afterwards.
+    private readonly Dictionary<string, PopupDecision> _popupDecisions = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Decides what to do about a popup covering the page. While exploring the tester is asked once per
+    /// popup; an unattended run, or no answer, dismisses it.
+    /// </summary>
+    private async Task<PopupDecision> DecidePopupAsync(ExplorationSession session, string popupText, string popupKey, CancellationToken ct)
+    {
+        if (_popupDecisions.TryGetValue(popupKey, out var known))
+        {
+            return known;
+        }
+
+        var decision = new PopupDecision(true, null);
+        if (CanAskUser(session))
+        {
+            var answer = await AskAndAwaitAnswerAsync(
+                session,
+                "A popup is covering the page. Should I dismiss it and continue? "
+                    + "Answer Yes to dismiss it, or tell me what to do with it instead (e.g. \"fill it in with {{email}}\" or \"choose the first option\").",
+                $"Popup: \"{Truncate(popupText, 200)}\"",
+                ct);
+
+            if (answer is not null && !IsDismissAnswer(answer))
+            {
+                decision = new PopupDecision(false, IsNegative(answer) ? "fill it in as the scenario requires" : answer);
+            }
+        }
+
+        _popupDecisions[popupKey] = decision;
+        await PublishLogAsync(
+            session,
+            decision.Dismiss
+                ? $"  • Popup \"{Truncate(popupText, 60)}\": dismissing it (recorded as a step)."
+                : $"  • Popup \"{Truncate(popupText, 60)}\": handling it as instructed — \"{decision.Instruction}\".",
+            "info",
+            ct);
+        return decision;
+    }
+
+    private static bool IsDismissAnswer(string answer) =>
+        IsAffirmative(answer)
+        || Regex.IsMatch(answer, @"\b(dismiss|close|skip|ignore|guest|cancel|no thanks|not now)\b", RegexOptions.IgnoreCase);
+
+    private static bool IsPopupInteraction(RecordedStepAction action) =>
+        action.Options?.GetValueOrDefault(PopupOption) == PopupInteract;
+
+    /// <summary>Closes a popup covering the page during a replay. Returns true when one was closed.</summary>
+    private async Task<bool> DismissPopupForReplayAsync(ExplorationSession session, PlaywrightBrowserService browser, ScenarioStep step, CancellationToken ct)
+    {
+        var popup = await browser.DismissBlockingPopupAsync(ct);
+        if (popup is not { } found)
+        {
+            return false;
+        }
+
+        await PublishLogAsync(
+            session,
+            found.Cleared
+                ? $"  • Step {step.Order}: closed a popup covering the page (\"{Truncate(found.Text, 60)}\")."
+                : $"  ⚠ Step {step.Order}: a popup covers the page and could not be closed (\"{Truncate(found.Text, 60)}\").",
+            found.Cleared ? "info" : "warn",
+            ct);
+        return found.Cleared;
+    }
+
+    private static bool IsNegative(string answer) =>
+        Regex.IsMatch(answer.Trim(), @"^(n|no|nope|don't|do not)\b\W*$", RegexOptions.IgnoreCase);
+
+    /// <summary>Records "dismiss this popup" as a step that replay performs whenever the popup shows up.</summary>
+    private async Task<ProposedStep> RecordPopupDismissalStepAsync(
+        ExplorationSession session,
+        Scenario scenario,
+        PlaywrightMcpBrowser mcp,
+        string popupText,
+        string popupKey,
+        int order,
+        CancellationToken ct)
+    {
+        var title = popupText.Trim();
+        if (title.Length > 40)
+        {
+            var cut = title.LastIndexOf(' ', 40);
+            title = (cut > 0 ? title[..cut] : title[..40]).TrimEnd(',', '.', ':', ';', ' ') + "…";
+        }
+
+        var desc = $"Dismiss the \"{title}\" popup if it appears";
+        const string expected = "The popup is closed and the page behind it can be used.";
+
+        var screenshotPath = await CaptureMcpStepScreenshotAsync(session, mcp, ct);
+        _db.ScenarioStepResults.Add(new ScenarioStepResult
+        {
+            TenantId = session.TenantId,
+            ProjectId = session.ProjectId,
+            SessionId = session.Id,
+            ScenarioId = scenario.Id,
+            StepOrder = order,
+            Action = _redactor.Redact(desc),
+            Status = StepRunStatus.Passed,
+            Detail = "Closed the popup that covered the page.",
+            Url = mcp.CurrentUrl,
+            ScreenshotPath = screenshotPath,
+        });
+        await _db.SaveChangesAsync(ct);
+        await PublishStepAsync(session, scenario, new ScenarioStep { Order = order, Action = desc }, StepRunStatus.Passed, "Closed the popup that covered the page.", mcp.CurrentUrl, ct);
+        await PublishLogAsync(session, $"  ✓ {order}. {desc}", "success", ct);
+
+        return new ProposedStep
+        {
+            Order = order,
+            Action = desc,
+            ExpectedResult = expected,
+            RecordedActionsJson = SerializeRecordedActions(
+            [
+                new RecordedStepAction
+                {
+                    Kind = "dismiss_popup",
+                    Target = title,
+                    Options = new Dictionary<string, string?> { [PopupOption] = popupKey },
+                },
+            ]),
+        };
+    }
+
+    /// <summary>Puts an agent's question to the user (Explore only) and returns the history line to record.</summary>
+    private Task<string> HandleAskAsync(ExplorationSession session, StepAgentDecision decision, int turn, CancellationToken ct) =>
+        HandleAskAsync(session, decision.Question, decision.QuestionContext ?? TrimThought(decision.Thought), turn, ct);
+
+    private async Task<string> HandleAskAsync(ExplorationSession session, string? question, string? context, int turn, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(question))
+        {
+            return $"- turn {turn}: you chose \"ask\" without a question. Put ONE specific question in \"question\", or act.";
+        }
+
+        if (!CanAskUser(session))
+        {
+            return $"- turn {turn}: you tried to ask \"{question}\", but this is an unattended run and nobody can answer. "
+                + "Decide from the step and its expected result, or finish with stepFailed and explain the ambiguity.";
+        }
+
+        var answer = await AskAndAwaitAnswerAsync(session, question, context, ct);
+        return answer is null
+            ? $"- turn {turn}: asked \"{question}\" but nobody answered; decide without it."
+            : $"- turn {turn}: asked \"{question}\" -> the user answered: \"{answer}\". Treat this as settled.";
+    }
+
+    /// <summary>
+    /// Explore only: before the agent gives up, ask the tester how to proceed. Returns their instruction,
+    /// or null when the agent should stop (unattended run, no answer, or the tester said to stop).
+    /// </summary>
+    private async Task<string?> AskBeforeGivingUpAsync(ExplorationSession session, string goal, string? reason, CancellationToken ct)
+    {
+        if (!CanAskUser(session))
+        {
+            return null;
+        }
+
+        var answer = await AskAndAwaitAnswerAsync(
+            session,
+            "I can't see how to complete this. How should I continue? Describe what to do, or answer \"stop\" to end here.",
+            $"Goal: {Truncate(goal, 300)}\nWhy I'm stuck: {Truncate(reason ?? "no reason given", 600)}",
+            ct);
+
+        return answer is null || IsNegative(answer) || Regex.IsMatch(answer, @"^\s*(stop|end|give up|abort|quit)\b", RegexOptions.IgnoreCase)
+            ? null
+            : answer;
+    }
+
+    /// <summary>Explore only: asks the tester for direction after several turns without progress.</summary>
+    private async Task<string?> AskWhenStuckAsync(ExplorationSession session, string goal, IEnumerable<string> recentAttempts, CancellationToken ct)
+    {
+        if (!CanAskUser(session))
+        {
+            return null;
+        }
+
+        return await AskAndAwaitAnswerAsync(
+            session,
+            "I'm not making progress. What should I do next? Tell me which control to use or what the step means.",
+            $"Goal: {Truncate(goal, 300)}\nMy last attempts:\n{string.Join("\n", recentAttempts.Select(a => Truncate(a, 200)))}",
+            ct);
+    }
+
+    /// <summary>Only an Explore has someone watching; an unattended Run must never block on a question.</summary>
+    private static bool CanAskUser(ExplorationSession session) => !session.ExecuteSavedSteps;
+
+    private static bool IsAffirmative(string answer) =>
+        Regex.IsMatch(answer.Trim(), @"^(y|yes|yeah|yep|correct|confirmed?|true|pass(ed)?|ok(ay)?|looks good|right)\b", RegexOptions.IgnoreCase);
+
+    /// <summary>Renders the session's settled Q&amp;A log for the prompt, or null when there is none yet.</summary>
+    private static string? FormatAnsweredQuestions(ExplorationSession? session)
+    {
+        if (string.IsNullOrWhiteSpace(session?.AnsweredQuestionsJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            var entries = JsonSerializer.Deserialize<List<string>>(session.AnsweredQuestionsJson!, JsonOpts);
+            return entries is { Count: > 0 } ? string.Join("\n\n", entries) : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Pauses the session on a question and waits for a person to answer it in the live view, then
+    /// records the answer so it is never asked again. Polls the database because the answer arrives on
+    /// an HTTP request while this runs on a background worker.
+    /// </summary>
+    /// <returns>The trimmed answer, or null if nobody answered within 15 minutes.</returns>
+    private async Task<string?> AskAndAwaitAnswerAsync(
+        ExplorationSession session,
+        string question,
+        string? context,
+        CancellationToken ct)
+    {
+        session.PendingQuestion = Truncate(question, 1000);
+        session.PendingQuestionContext = context is null ? null : Truncate(_redactor.Redact(context), 2000);
+        session.PendingQuestionAskedAtUtc = _clock.UtcNow;
+        session.PendingQuestionAnswer = null;
+        session.Status = ExplorationStatus.AwaitingInput;
+        await _db.SaveChangesAsync(ct);
+        await ClearStoredAnswerAsync(session.Id, ct);
+        await PublishLogAsync(session, $"  ❓ Waiting for your answer: {question}", "warn", ct);
+        await PublishStatusAsync(session, null, ct);
+
+        var deadline = _clock.UtcNow.AddMinutes(15);
+        string? answer = null;
+        try
+        {
+            while (_clock.UtcNow < deadline)
+            {
+                ct.ThrowIfCancellationRequested();
+                await Task.Delay(TimeSpan.FromSeconds(2), ct);
+
+                var current = await _db.ExplorationSessions
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .Where(s => s.Id == session.Id)
+                    .Select(s => new { s.PendingQuestionAnswer, s.Status })
+                    .FirstOrDefaultAsync(ct);
+
+                if (current is null || current.Status == ExplorationStatus.Cancelled)
+                {
+                    throw new OperationCanceledException("The session was cancelled while waiting for an answer.");
+                }
+
+                if (!string.IsNullOrWhiteSpace(current.PendingQuestionAnswer))
+                {
+                    answer = current.PendingQuestionAnswer.Trim();
+                    break;
+                }
+            }
+        }
+        finally
+        {
+            session.Status = ExplorationStatus.Running;
+            session.PendingQuestion = null;
+            session.PendingQuestionContext = null;
+            session.PendingQuestionAnswer = null;
+            await _db.SaveChangesAsync(CancellationToken.None);
+            await ClearStoredAnswerAsync(session.Id, CancellationToken.None);
+            await PublishStatusAsync(session, null, CancellationToken.None);
+        }
+
+        if (answer is not null)
+        {
+            var log = string.IsNullOrWhiteSpace(session.AnsweredQuestionsJson)
+                ? new List<string>()
+                : JsonSerializer.Deserialize<List<string>>(session.AnsweredQuestionsJson!, JsonOpts) ?? new List<string>();
+            log.Add($"Q: {question}\nA: {answer}");
+            session.AnsweredQuestionsJson = JsonSerializer.Serialize(log, JsonOpts);
+            await _db.SaveChangesAsync(ct);
+            await PublishLogAsync(session, $"  ✓ You answered: {answer}", "success", ct);
+        }
+        else
+        {
+            await PublishLogAsync(session, "  ⚠ No answer within 15 minutes — continuing without it.", "warn", ct);
+        }
+
+        return answer;
+    }
+
+    /// <summary>
+    /// The answer is written by another request, so the tracked entity still holds null and
+    /// SaveChanges sees nothing to clear; without this the previous answer instantly answers the next question.
+    /// </summary>
+    private Task ClearStoredAnswerAsync(Guid sessionId, CancellationToken ct) =>
+        _db.ExplorationSessions
+            .IgnoreQueryFilters()
+            .Where(s => s.Id == sessionId)
+            .ExecuteUpdateAsync(s => s.SetProperty(x => x.PendingQuestionAnswer, (string?)null), ct);
+
     /// <summary>
     /// Structured QA verification of a step/scenario's expected result against the LIVE page. Decomposes
     /// the expectation into atomic conditions (presence/absence, counts/thresholds/ranges, ordering,
@@ -503,7 +891,8 @@ public sealed class ExplorerAgent : IExplorerAgent
         string url,
         string snapshot,
         string pageData,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? pageChanges = null)
     {
         if (string.IsNullOrWhiteSpace(step.ExpectedResult))
         {
@@ -522,10 +911,14 @@ public sealed class ExplorerAgent : IExplorerAgent
 
         try
         {
-            var user = QaVerificationPrompts.BuildUserPrompt(expected, ResolveVars(step.Action), url, snapshot, pageData);
+            var user = QaVerificationPrompts.BuildUserPrompt(
+                expected, ResolveVars(step.Action), url, snapshot, pageData,
+                _observations.Count > 0 ? string.Join("\n", _observations) : null,
+                pageChanges);
             var raw = await _llm.CompleteAsync(QaVerificationPrompts.System, user, jsonMode: true, ct);
             var json = JsonExtraction.ExtractJsonObject(raw);
             var verdict = JsonSerializer.Deserialize<QaVerdict>(json, JsonOpts);
+            RememberObservation($"while verifying \"{Truncate(ResolveVars(step.Action), 60)}\"", url, pageData);
             if (verdict is null)
             {
                 return (false, "outcome could not be verified");
@@ -578,6 +971,31 @@ public sealed class ExplorerAgent : IExplorerAgent
                     : "the expected result was not met (no further detail was reported).";
             }
 
+            // The page could not prove or disprove something (e.g. a value that was never shown). While
+            // exploring, a person is watching, so ask them rather than reporting a failure we can't stand behind.
+            if (!string.IsNullOrWhiteSpace(verdict.Question) && CanAskUser(session))
+            {
+                var answer = await AskAndAwaitAnswerAsync(session, verdict.Question!.Trim(), observed, ct);
+                if (answer is not null)
+                {
+                    return IsAffirmative(answer)
+                        ? (true, $"Confirmed by the tester (\"{answer}\"). Observed: {observed}")
+                        : (false, $"Actual: {observed} — the tester answered \"{answer}\".");
+                }
+            }
+
+            // The step text itself may be what's wrong. While exploring, let the tester decide whether
+            // this is a defect or an outdated/mistyped expected result.
+            if (CanAskUser(session) && _mismatchAsked.Add(step.Id)
+                && await _db.ScenarioSteps.IgnoreQueryFilters().AnyAsync(s => s.Id == step.Id, ct))
+            {
+                var resolved = await ResolveExpectationMismatchAsync(session, step, expected, observed, url, snapshot, pageData, ct, pageChanges);
+                if (resolved is { } outcome)
+                {
+                    return outcome;
+                }
+            }
+
             return (false, $"Actual: {observed}");
         }
         catch (Exception ex) when (ex is not LlmUnavailableException)
@@ -588,6 +1006,87 @@ public sealed class ExplorerAgent : IExplorerAgent
             _logger.LogDebug(ex, "QA verification failed for step {StepId}; treating as unmet.", step.Id);
             return (false, "outcome could not be verified");
         }
+    }
+
+    /// <summary>
+    /// Asks the tester whether a failed expectation is a real defect or a wrong expected result.
+    /// Returns null when nobody answered, so the caller reports the failure as usual.
+    /// </summary>
+    private async Task<(bool Ok, string Reason)?> ResolveExpectationMismatchAsync(
+        ExplorationSession session,
+        ScenarioStep step,
+        string expected,
+        string observed,
+        string url,
+        string snapshot,
+        string pageData,
+        CancellationToken ct,
+        string? pageChanges)
+    {
+        var answer = await AskAndAwaitAnswerAsync(
+            session,
+            $"Step {step.Order} does not match the page. Is this a defect, or is the step's expected result wrong? "
+                + "Answer \"Fail\" to report it as a defect, \"Accept\" to treat the page as correct and update the expected result, "
+                + "or type the correct expected result.",
+            $"Step: {Truncate(ResolveVars(step.Action), 200)}\nExpected: {Truncate(expected, 400)}\nPage shows: {Truncate(observed, 600)}",
+            ct);
+
+        if (answer is null)
+        {
+            return null;
+        }
+
+        if (IsDefectAnswer(answer))
+        {
+            return (false, $"Actual: {observed} — confirmed as a defect by the tester.");
+        }
+
+        if (IsAffirmative(answer) || Regex.IsMatch(answer, @"^\s*(accept|actual|update|go with)\b", RegexOptions.IgnoreCase))
+        {
+            var rewritten = await RewriteAsExpectationAsync(observed, step, ct);
+            await UpdateStepExpectationAsync(session, step, rewritten, ct);
+            return (true, $"The tester accepted what the page shows; expected result updated to: {rewritten}");
+        }
+
+        // Anything else is the corrected expected result: save it and judge the page against it once.
+        await UpdateStepExpectationAsync(session, step, answer.Trim(), ct);
+        var (ok, reason) = await VerifyExpectedOutcomeAsync(session, step, url, snapshot, pageData, ct, pageChanges);
+        return (ok, ok ? $"Expected result corrected by the tester; now satisfied: {reason}" : reason);
+    }
+
+    private static bool IsDefectAnswer(string answer) =>
+        Regex.IsMatch(answer.Trim(), @"^(fail(ed)?|defect|bug|keep (it )?fail(ed|ing)?|report( it)?|n|no)\b\W*$", RegexOptions.IgnoreCase);
+
+    private async Task<string> RewriteAsExpectationAsync(string observed, ScenarioStep step, CancellationToken ct)
+    {
+        try
+        {
+            var text = await _llm.CompleteAsync(
+                "Rewrite the observation as ONE concise, verifiable expected result for a manual test step, in the present tense "
+                    + "(e.g. \"An 'Add to cart' button is shown.\"). Describe only what the page shows; never mention expectations, "
+                    + "violations or verdicts. The test will run again on another day, so leave out values that change between runs "
+                    + "(exact counts, prices, dates, ratings) unless the step is specifically about that value — e.g. write "
+                    + "\"The summary line shows the number of results for 'laptop'.\" Reply with the sentence only.",
+                $"Step: {ResolveVars(step.Action)}\nObservation: {observed}",
+                jsonMode: false,
+                ct);
+            text = text.Trim().Trim('"');
+            return text.Length is > 0 and <= 1000 ? text : Truncate(observed, 1000);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return Truncate(observed, 1000);
+        }
+    }
+
+    private async Task UpdateStepExpectationAsync(ExplorationSession session, ScenarioStep step, string expectation, CancellationToken ct)
+    {
+        step.ExpectedResult = expectation;
+        await _db.ScenarioSteps
+            .IgnoreQueryFilters()
+            .Where(s => s.Id == step.Id)
+            .ExecuteUpdateAsync(s => s.SetProperty(x => x.ExpectedResult, expectation), ct);
+        await PublishLogAsync(session, $"  ✎ Step {step.Order}: expected result updated to \"{Truncate(expectation, 160)}\".", "info", ct);
     }
 
     /// <summary>
@@ -628,8 +1127,12 @@ public sealed class ExplorerAgent : IExplorerAgent
         PlaywrightMcpBrowser mcp,
         StepAgentDecision decision,
         string baseUrl,
+        Func<string?, string?> resolveForBrowser,
+        Func<string, string?> resolveTestFile,
         CancellationToken ct)
     {
+        // The plaintext only ever exists inside this call; observations keep the placeholder.
+        var browserValue = resolveForBrowser(decision.Value) ?? string.Empty;
         switch (decision.Action?.Trim().ToLowerInvariant())
         {
             case "navigate":
@@ -656,11 +1159,11 @@ public sealed class ExplorerAgent : IExplorerAgent
                 return (false, $"could not click {decision.Ref} (it may be hidden or covered by a modal/overlay — dismiss any blocking popup first, e.g. press Escape or click its close/Skip/Not now control)", false);
             case "type":
                 var typed = !string.IsNullOrWhiteSpace(decision.Ref)
-                    && await mcp.TypeAsync(decision.Target ?? "field", decision.Ref!, decision.Value ?? string.Empty, ct);
+                    && await mcp.TypeAsync(decision.Target ?? "field", decision.Ref!, browserValue, ct);
                 if (!typed && (!string.IsNullOrWhiteSpace(decision.Target) || !string.IsNullOrWhiteSpace(decision.Value)))
                 {
                     // Relocate the field by its label/placeholder and fill it directly.
-                    typed = await mcp.FillByDescriptorAsync(decision.Target ?? string.Empty, decision.Value ?? string.Empty, ct);
+                    typed = await mcp.FillByDescriptorAsync(decision.Target ?? string.Empty, browserValue, ct);
                     if (typed)
                     {
                         return (true, $"typed \"{decision.Value}\" into \"{decision.Target}\" (by descriptor; the snapshot ref was stale)", false);
@@ -675,7 +1178,7 @@ public sealed class ExplorerAgent : IExplorerAgent
                 var option = decision.Value ?? string.Empty;
                 var selected = !string.IsNullOrWhiteSpace(decision.Ref)
                     && !string.IsNullOrWhiteSpace(option)
-                    && await mcp.SelectOptionAsync(decision.Target ?? "dropdown", decision.Ref!, option, ct);
+                    && await mcp.SelectOptionAsync(decision.Target ?? "dropdown", decision.Ref!, browserValue, ct);
                 return (selected,
                     selected
                         ? $"selected \"{option}\" in [ref={decision.Ref}]"
@@ -684,6 +1187,69 @@ public sealed class ExplorerAgent : IExplorerAgent
             case "wait":
                 await mcp.WaitAsync(1, ct);
                 return (true, "waited", false);
+            case "double_click":
+                var dbl = await mcp.DoubleClickAsync(decision.Target ?? "element", decision.Ref!, ct);
+                return (dbl, dbl ? $"double-clicked [ref={decision.Ref}]" : $"could not double-click {decision.Ref}", dbl);
+            case "right_click":
+                var right = await mcp.RightClickAsync(decision.Target ?? "element", decision.Ref!, ct);
+                return (right, right ? $"right-clicked [ref={decision.Ref}]" : $"could not right-click {decision.Ref}", right);
+            case "hover":
+                var hovered = await mcp.HoverAsync(decision.Target ?? "element", decision.Ref!, ct);
+                return (hovered, hovered ? $"hovering over [ref={decision.Ref}] — menus/tooltips it reveals are now in the snapshot" : $"could not hover {decision.Ref}", hovered);
+            case "clear":
+                var cleared = !string.IsNullOrWhiteSpace(decision.Ref)
+                    ? await mcp.TypeAsync(decision.Target ?? "field", decision.Ref!, string.Empty, ct)
+                    : await mcp.FillByDescriptorAsync(decision.Target ?? string.Empty, string.Empty, ct);
+                return (cleared, cleared ? $"cleared \"{decision.Target}\"" : $"could not clear {decision.Ref ?? decision.Target}", cleared);
+            case "check" or "uncheck":
+                var wanted = decision.Action == "check";
+                var set = await mcp.SetCheckedAsync(decision.Target ?? "checkbox", decision.Ref!, wanted, ct);
+                return (set, set ? $"{(wanted ? "checked" : "unchecked")} [ref={decision.Ref}]" : $"could not {decision.Action} {decision.Ref}", set);
+            case "scroll":
+                var down = !string.Equals(decision.Value ?? decision.Target, "up", StringComparison.OrdinalIgnoreCase);
+                var moved = await mcp.ScrollPageAsync(down, ct);
+                return (true, moved
+                    ? $"scrolled {(down ? "down" : "up")} — any content that loads on scroll is now in the snapshot"
+                    : "the page did not scroll (already at the end) — nothing more will load", false);
+            case "wait_for":
+                var text = decision.Value ?? decision.Target!;
+                var gone = string.Equals(decision.Target, "gone", StringComparison.OrdinalIgnoreCase);
+                var appeared = await mcp.WaitForTextAsync(text, gone, ct);
+                return (appeared, appeared ? $"\"{text}\" {(gone ? "disappeared" : "appeared")}" : $"timed out waiting for \"{text}\"", false);
+            case "back":
+                var wentBack = await mcp.NavigateBackAsync(ct);
+                await mcp.StabilizePageAsync(ct);
+                return (wentBack, wentBack ? $"went back to {mcp.CurrentUrl}" : "could not go back (no history)", false);
+            case "reload":
+                await mcp.NavigateAsync(mcp.CurrentUrl, ct);
+                await mcp.StabilizePageAsync(ct);
+                return (true, $"reloaded {mcp.CurrentUrl}", false);
+            case "switch_tab":
+                var tabSwitched = int.TryParse(decision.Value ?? decision.Target, out var tabIndex)
+                    && await mcp.SelectTabAsync(tabIndex, ct);
+                return (tabSwitched, tabSwitched ? $"switched to tab {tabIndex}" : "could not switch tab — give the tab index (0 = first) in \"value\"", false);
+            case "accept_dialog" or "dismiss_dialog":
+                var accept = decision.Action == "accept_dialog";
+                var answered = await mcp.HandleDialogAsync(accept, accept ? resolveForBrowser(decision.Value) : null, ct);
+                return (answered, answered ? $"{(accept ? "accepted" : "dismissed")} the browser dialog" : "no browser dialog was open", false);
+            case "drag":
+                var dropName = decision.DestinationTarget ?? "drop target";
+                var dragged = await mcp.DragAsync(decision.Target ?? "element", decision.Ref!, dropName, decision.DestinationRef!, ct);
+                return (dragged,
+                    dragged ? $"dragged [ref={decision.Ref}] onto [ref={decision.DestinationRef}]" : $"could not drag {decision.Ref} onto {decision.DestinationRef}",
+                    dragged);
+            case "upload":
+                var fileNames = (decision.Value ?? string.Empty)
+                    .Split([',', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                var filePaths = fileNames.Select(resolveTestFile).ToList();
+                var unknownFiles = fileNames.Where((_, i) => filePaths[i] is null).ToList();
+                if (fileNames.Length == 0 || unknownFiles.Count > 0)
+                {
+                    return (false, $"unknown test file(s): {string.Join(", ", unknownFiles)} — use only names listed under \"Test files\"", false);
+                }
+
+                var (attached, uploadDetail) = await mcp.UploadFilesAsync(decision.Target ?? "file input", decision.Ref!, filePaths!, ct);
+                return (attached, attached ? $"attached {string.Join(", ", fileNames)}" : $"could not upload: {uploadDetail}", attached);
             default:
                 return (false, $"unknown action '{decision.Action}'", false);
         }
@@ -735,15 +1301,12 @@ public sealed class ExplorerAgent : IExplorerAgent
         // budget even when they sit far down a long page.
         var goalText = $"{scenario.Title} {mission} {effectiveExpectedResult}";
 
-        // Real sites often gate the page behind a login/OTP, cookie, location or promo modal that
-        // intercepts every click. Clear those deterministically before the agent starts so it can
-        // actually interact, rather than hoping the LLM infers it from opaque "could not click" errors.
+        // Nothing is closed silently here: anything covering the page is the tester's decision, asked at
+        // the top of each turn or when an action is blocked.
         await mcp.StabilizePageAsync(ct);
-        var dismissed = await DismissBlockingOverlaysAsync(session, mcp, ct);
-        if (dismissed > 0)
-        {
-            await PublishLogAsync(session, $"Cleared {dismissed} blocking popup(s) before exploring.", "info", ct);
-        }
+
+        _observations.Clear();
+        RememberObservation("start page", mcp.CurrentUrl, await SafeExtractPageDataAsync(mcp, ct));
 
         const int maxTurns = 18;
         var history = new StringBuilder();
@@ -757,6 +1320,14 @@ public sealed class ExplorerAgent : IExplorerAgent
         var decided = false;
         // How many times we've rejected an "I'm done" claim made before the agent did anything at all.
         var prematureCompletions = 0;
+        // Popups already turned into a "dismiss" step, and popups whose "handle it" instruction was given.
+        var recordedPopupSteps = new HashSet<string>(StringComparer.Ordinal);
+        var popupInstructionsGiven = new HashSet<string>(StringComparer.Ordinal);
+        // Consecutive turns that changed nothing; after a few the tester is asked for direction.
+        var stuckTurns = 0;
+        var stuckAsks = 0;
+        var recentAttempts = new List<string>();
+        var askedBeforeGivingUp = false;
 
         for (var turn = 1; turn <= maxTurns; turn++)
         {
@@ -773,7 +1344,54 @@ public sealed class ExplorerAgent : IExplorerAgent
             // next click — a product card, which on real catalogues is target="_blank" — would open a second
             // tab that MCP never switches to, so the agent would keep clicking a page it already left.
             await mcp.StabilizePageAsync(ct);
+
+            // A modal covering the page is never handled silently: the tester decides once per popup
+            // (dismiss it, or fill it in), and that decision becomes a step so replay does the same.
+            var popupText = await mcp.DetectBlockingPopupAsync(ct);
+            var popupInteract = false;
+            if (popupText is not null)
+            {
+                var popupKey = BlockingPopup.KeyFor(popupText);
+                var popupDecision = await DecidePopupAsync(session, popupText, popupKey, ct);
+                if (popupDecision.Dismiss)
+                {
+                    var closed = await mcp.DismissBlockingPopupAsync(ct);
+                    history.AppendLine(closed
+                        ? $"- turn {turn}: a popup (\"{Truncate(popupText, 80)}\") covered the page and was dismissed."
+                        : $"- turn {turn}: a popup (\"{Truncate(popupText, 80)}\") covers the page and could not be closed automatically — close it (its ✕/Close control) before anything else.");
+                    if (closed && recordedPopupSteps.Add(popupKey))
+                    {
+                        discovered.Add(await RecordPopupDismissalStepAsync(session, scenario, mcp, popupText, popupKey, order, ct));
+                        order++;
+                    }
+                }
+                else
+                {
+                    popupInteract = true;
+                    if (popupInstructionsGiven.Add(popupKey))
+                    {
+                        history.AppendLine(
+                            $"- turn {turn}: a popup (\"{Truncate(popupText, 80)}\") is open and the user does NOT want it dismissed. "
+                            + $"Their instruction: \"{popupDecision.Instruction}\". Complete the popup accordingly, then continue with the goal.");
+                    }
+                }
+            }
+
             var snapshot = TrimSnapshot(await mcp.SnapshotAsync(ct), goalText);
+
+            if (stuckTurns >= 3 && stuckAsks < 2 && CanAskUser(session))
+            {
+                stuckAsks++;
+                var direction = await AskWhenStuckAsync(session, scenario.Title, recentAttempts, ct);
+                if (direction is not null)
+                {
+                    history.AppendLine($"- turn {turn}: you were not making progress, so the user was asked. Their direction: \"{direction}\". Follow it.");
+                }
+
+                stuckTurns = 0;
+                recentAttempts.Clear();
+            }
+
             var decision = await DecideNextStepActionAsync(missionStep, mcp.CurrentUrl, snapshot, history.ToString(), turn, maxTurns, ct);
             if (decision is null)
             {
@@ -784,6 +1402,12 @@ public sealed class ExplorerAgent : IExplorerAgent
             decision.Value = ResolveVarsOrNull(decision.Value);
             var action = decision.Action?.Trim().ToLowerInvariant();
 
+            if (action == "ask")
+            {
+                history.AppendLine(await HandleAskAsync(session, decision, turn, ct));
+                continue;
+            }
+
             // MCP reports a composite control's accessible name as the WHOLE of its nested text, so a
             // product card arrives as a 400-character blob of title + rating + price + badges. Left
             // alone that becomes an unreadable step AND an unreplayable locator, because most of the
@@ -791,7 +1415,7 @@ public sealed class ExplorerAgent : IExplorerAgent
             // run. Condense it to the stable leading phrase. Only element-addressing verbs are touched:
             // "navigate" carries a URL in Target and "press" carries a key name, and cutting either
             // would break the action itself.
-            if (action is "click" or "type" or "select")
+            if (action is not null && StepAgentDecisionParser.ElementActions.Contains(action))
             {
                 decision.Target = CondenseTargetDescriptor(decision.Target);
             }
@@ -820,6 +1444,19 @@ public sealed class ExplorerAgent : IExplorerAgent
                     continue;
                 }
 
+                if (decision.StepFailed && !askedBeforeGivingUp && CanAskUser(session))
+                {
+                    askedBeforeGivingUp = true;
+                    var instruction = await AskBeforeGivingUpAsync(session, scenario.Title, TrimThought(decision.Thought), ct);
+                    if (instruction is not null)
+                    {
+                        history.AppendLine($"- turn {turn}: you were about to give up; the user says: \"{instruction}\". Follow it and continue.");
+                        stuckTurns = 0;
+                        recentAttempts.Clear();
+                        continue;
+                    }
+                }
+
                 if (decision.StepFailed)
                 {
                     goalReason = TrimThought(decision.Thought) ?? "The agent concluded the scenario cannot be accomplished on this app.";
@@ -838,7 +1475,7 @@ public sealed class ExplorerAgent : IExplorerAgent
             // Refuse to repeat a click/type on a target that already produced no effect — otherwise the
             // agent can loop on an inert control (e.g. it kept clicking the "Brand" filter heading). Tell
             // it to choose a different, more specific element instead of burning turns on the same one.
-            var actionKey = action is "click" or "type"
+            var actionKey = action is "click" or "type" or "double_click" or "hover" or "check" or "uncheck"
                 ? $"{action}|{(decision.Target ?? decision.Ref ?? string.Empty).Trim().ToLowerInvariant()}"
                 : null;
             if (actionKey is not null && noEffectKeys.Contains(actionKey))
@@ -846,6 +1483,8 @@ public sealed class ExplorerAgent : IExplorerAgent
                 var label = decision.Target ?? decision.Ref ?? "that element";
                 history.AppendLine($"- turn {turn}: SKIPPED repeat {action} on \"{label}\" — it had NO effect earlier. Pick a DIFFERENT, more specific element (e.g. a concrete brand/option/checkbox that is already visible in the snapshot, not a section heading or a \"MORE\"/expand link), or a different approach.");
                 await PublishLogAsync(session, $"  ↷ Skipping repeat {action} on \"{label}\" (no effect earlier) — trying a different element.", "warn", ct);
+                stuckTurns++;
+                recentAttempts.Add($"{action} \"{label}\" again (it had no effect before)");
                 continue;
             }
 
@@ -868,12 +1507,13 @@ public sealed class ExplorerAgent : IExplorerAgent
                 preActionUrl,
                 ct);
 
-            var (performed, observation, viaRef) = await PerformMcpActionAsync(mcp, decision, baseUrl, ct);
+            var (performed, observation, viaRef) = await PerformMcpActionAsync(
+                mcp, decision, baseUrl, ResolveForBrowser, name => _testFiles.Resolve(session.ProjectId, name), ct);
 
             // If the click opened a popup/new tab, move to it before anything else looks at the page.
             // Everything downstream — the effect check, the after-snapshot the agent reasons over, the
             // step screenshot and the recorded URL — must describe the page the user can actually see.
-            if (performed && action is "click" or "press")
+            if (performed && action is "click" or "press" or "double_click" or "accept_dialog")
             {
                 var popupUrl = await mcp.FollowNewestTabAsync(ct);
                 if (popupUrl is not null)
@@ -885,15 +1525,32 @@ public sealed class ExplorerAgent : IExplorerAgent
                 await PublishTabsIfChangedAsync(session, mcp.Tabs, ct);
             }
 
-            // A rejected click/type almost always means a modal/overlay appeared and is intercepting
-            // pointer events (these often pop up LATE, after the page settles). Clear it generically
-            // and tell the agent to retry, rather than letting it flail at other elements.
-            if (!performed && action is "click" or "type")
+            // A rejected click/type almost always means something is covering the page (often one that
+            // popped up late). What to do with it is the tester's call, remembered per overlay.
+            if (!performed && action is not null && StepAgentDecisionParser.ElementActions.Contains(action))
             {
-                var cleared = await DismissBlockingOverlaysAsync(session, mcp, ct);
-                if (cleared > 0)
+                var overlayText = await mcp.DetectBlockingPopupAsync(ct)
+                    ?? BlockingPopup.ParseDetect(PlaywrightMcpBrowser.ResultSection(await mcp.EvaluateAsync($"() => ({DismissOverlayJs})('detect')", ct)));
+                if (overlayText is not null)
                 {
-                    observation += " — a blocking overlay was covering the page and has now been dismissed; retry the action.";
+                    var overlayKey = BlockingPopup.KeyFor(overlayText);
+                    var overlayDecision = await DecidePopupAsync(session, overlayText, overlayKey, ct);
+                    if (overlayDecision.Dismiss)
+                    {
+                        if (await DismissBlockingOverlaysAsync(session, mcp, ct) > 0)
+                        {
+                            observation += " — a popup was covering the page and has been closed; retry the action.";
+                            if (recordedPopupSteps.Add(overlayKey))
+                            {
+                                discovered.Add(await RecordPopupDismissalStepAsync(session, scenario, mcp, overlayText, overlayKey, order, ct));
+                                order++;
+                            }
+                        }
+                    }
+                    else if (popupInstructionsGiven.Add(overlayKey))
+                    {
+                        observation += $" — a popup (\"{Truncate(overlayText, 80)}\") is covering the page. The user's instruction for it: \"{overlayDecision.Instruction}\". Do that first, then continue.";
+                    }
                 }
             }
 
@@ -903,7 +1560,7 @@ public sealed class ExplorerAgent : IExplorerAgent
             // before claiming success; if nothing changed, record the step as unverified (Skipped) and
             // tell the agent so it can try a different approach instead of assuming it worked.
             var hadEffect = true;
-            if (performed && action is "click" or "type" or "select")
+            if (performed && action is not null && StepAgentDecisionParser.ElementActions.Contains(action))
             {
                 // Let the click's effect (navigation, re-render, XHR results) settle before comparing.
                 await mcp.WaitForPageSettledAsync(ct: ct);
@@ -959,7 +1616,10 @@ public sealed class ExplorerAgent : IExplorerAgent
                 observation += " — NOTE: scrolling shows you NOTHING new. The snapshot already covers the whole page from top to bottom, so a control you cannot find there is not below the fold — it does not exist under that name. Stop scrolling: act on a control that IS in the snapshot, or look for the same control under different wording.";
             }
 
-            var isRecordable = performed && !isHousekeepingKey && action is "navigate" or "click" or "type" or "press" or "select";
+            // Dialog answers, scrolling and waits are reactions to the page, not steps a replay performs.
+            var isRecordable = performed && !isHousekeepingKey && action is "navigate" or "click" or "type" or "press" or "select"
+                or "double_click" or "right_click" or "hover" or "clear" or "check" or "uncheck" or "back" or "reload" or "switch_tab"
+                or "drag" or "upload";
             var recorded = false;
             if (isRecordable)
             {
@@ -984,7 +1644,7 @@ public sealed class ExplorerAgent : IExplorerAgent
                         // scratch by probing a whole ladder of guesses — this pins the one that actually
                         // resolved, so a later Run's very first replay finds it directly.
                         string? elementKey = null;
-                        if (action is "click" or "type" or "select" && !string.IsNullOrWhiteSpace(decision.Ref))
+                        if (StepAgentDecisionParser.ElementActions.Contains(action!) && !string.IsNullOrWhiteSpace(decision.Ref))
                         {
                             var roleAndName = ExtractRoleAndName(snapshot, decision.Ref!);
                             if (roleAndName is { } located)
@@ -1014,9 +1674,25 @@ public sealed class ExplorerAgent : IExplorerAgent
                             new RecordedStepAction
                             {
                                 Kind = action!,
-                                Target = action == "navigate" ? mcp.CurrentUrl : decision.Target,
-                                Value = decision.Value,
+                                Target = action switch
+                                {
+                                    "navigate" => mcp.CurrentUrl,
+                                    "back" or "reload" or "switch_tab" => null,
+                                    _ => decision.Target,
+                                },
+                                Value = action == "switch_tab" ? null : decision.Value,
                                 ElementKey = elementKey,
+                                Options = action switch
+                                {
+                                    "switch_tab" => new Dictionary<string, string?> { [ActionOptionNames.TabIndex] = decision.Value ?? decision.Target },
+                                    "drag" => new Dictionary<string, string?>
+                                    {
+                                        [ActionOptionNames.DropTarget] = decision.DestinationTarget
+                                            ?? (decision.DestinationRef is { } dropRef ? ExtractRoleAndName(snapshot, dropRef)?.Name : null),
+                                    },
+                                    _ when popupInteract => new Dictionary<string, string?> { [PopupOption] = PopupInteract },
+                                    _ => null,
+                                },
                             },
                         ]);
 
@@ -1032,12 +1708,17 @@ public sealed class ExplorerAgent : IExplorerAgent
                     // Bring the element we just acted on into frame so the screenshot is evidence of
                     // THIS action, not of whatever sits at the top of a long page. No-ops when the
                     // element is already visible or when the action navigated away from it.
-                    if (!string.IsNullOrWhiteSpace(decision.Ref) && action is "click" or "type" or "select")
+                    if (!string.IsNullOrWhiteSpace(decision.Ref) && StepAgentDecisionParser.ElementActions.Contains(action!))
                     {
                         await mcp.ScrollIntoViewAsync(decision.Target ?? "element", decision.Ref!, ct);
                     }
 
                     var screenshotPath = await CaptureMcpStepScreenshotAsync(session, mcp, ct);
+                    if (hadEffect)
+                    {
+                        RememberObservation($"after step {order} ({desc})", mcp.CurrentUrl, await SafeExtractPageDataAsync(mcp, ct));
+                    }
+
                     _db.ScenarioStepResults.Add(new ScenarioStepResult
                     {
                         TenantId = session.TenantId,
@@ -1045,9 +1726,9 @@ public sealed class ExplorerAgent : IExplorerAgent
                         SessionId = session.Id,
                         ScenarioId = scenario.Id,
                         StepOrder = order,
-                        Action = desc,
+                        Action = _redactor.Redact(desc),
                         Status = stepStatus,
-                        Detail = stepDetail,
+                        Detail = _redactor.RedactOrNull(stepDetail),
                         Url = mcp.CurrentUrl,
                         ScreenshotPath = screenshotPath,
                     });
@@ -1076,6 +1757,17 @@ public sealed class ExplorerAgent : IExplorerAgent
                     performed ? "info" : "warn",
                     ct,
                     logId);
+            }
+
+            if (!performed || !hadEffect)
+            {
+                stuckTurns++;
+                recentAttempts.Add($"{pendingDesc} → {observation}");
+            }
+            else
+            {
+                stuckTurns = 0;
+                recentAttempts.Clear();
             }
 
             history.AppendLine($"- turn {turn}: {action} -> {observation}. (thought: {TrimThought(decision.Thought)})");
@@ -1111,6 +1803,9 @@ public sealed class ExplorerAgent : IExplorerAgent
             await PublishLogAsync(session, $"No actionable steps were discovered for '{scenario.Title}'. {goalReason}", "warn", ct);
         }
 
+        _logger.LogInformation(
+            "Session {SessionId} scenario {ScenarioId}: goal {Verdict} — {Reason}",
+            session.Id, scenario.Id, reachedGoal ? "reached" : "not confirmed", _redactor.Redact(goalReason));
         await PublishLogAsync(
             session,
             reachedGoal ? $"Scenario goal reached: {goalReason}" : $"Scenario goal not confirmed: {goalReason}",
@@ -1173,9 +1868,9 @@ public sealed class ExplorerAgent : IExplorerAgent
                 SessionId = session.Id,
                 ScenarioId = scenario.Id,
                 StepOrder = step.Order,
-                Action = action,
+                Action = _redactor.Redact(action),
                 Status = status,
-                Detail = detail,
+                Detail = _redactor.Redact(detail),
                 Url = mcp.CurrentUrl,
                 ScreenshotPath = screenshotPath,
             });
@@ -1265,7 +1960,7 @@ public sealed class ExplorerAgent : IExplorerAgent
                 SessionId = session.Id,
                 ScenarioId = scenario.Id,
                 StepOrder = step.Order,
-                Action = action,
+                Action = _redactor.Redact(action),
                 Status = StepRunStatus.Skipped,
                 Detail = detail,
                 Url = currentUrl,
@@ -1300,9 +1995,25 @@ public sealed class ExplorerAgent : IExplorerAgent
 
             if (!string.IsNullOrWhiteSpace(environment?.VariablesJson))
             {
-                foreach (var kvp in EnvironmentVariableSerialization.ParseValues(environment.VariablesJson))
+                var unresolved = new List<string>();
+                var values = await EnvironmentVariableSerialization.ResolveValuesAsync(
+                    environment.VariablesJson,
+                    _secretProtector,
+                    _secretStore,
+                    session.TenantId,
+                    _secretKeys,
+                    (key, reason) => unresolved.Add($"{{{{{key}}}}}: {reason}"),
+                    ct);
+
+                foreach (var kvp in values)
                 {
                     vars[kvp.Key] = kvp.Value;
+                }
+
+                foreach (var line in unresolved)
+                {
+                    _logger.LogWarning("Session {SessionId}: could not resolve vault variable {Detail}", session.Id, line);
+                    await PublishLogAsync(session, $"⚠ Vault variable not resolved — {line}", "warn", ct);
                 }
             }
 
@@ -1321,23 +2032,34 @@ public sealed class ExplorerAgent : IExplorerAgent
                 foreach (var column in columns)
                 {
                     var value = first is not null && first.TryGetValue(column, out var v) ? v : null;
+                    var secret = SecretRedactor.LooksSecret(column);
                     vars[$"{set.Name}.{column}"] = value;
+                    if (secret)
+                    {
+                        _secretKeys.Add($"{set.Name}.{column}");
+                    }
+
                     if (!vars.ContainsKey(column))
                     {
                         vars[column] = value;
+                        if (secret)
+                        {
+                            _secretKeys.Add(column);
+                        }
                     }
                 }
             }
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Failed to load variables for environment {EnvironmentId}.", session.EnvironmentId);
+            _logger.LogWarning(ex, "Failed to load variables for environment {EnvironmentId}.", session.EnvironmentId);
         }
 
         return vars;
     }
 
     /// <summary>Replaces <c>{{key}}</c> tokens with values bound from the environment's test data.
+    /// Secret tokens are left in place: this output feeds prompts, logs and stored results.
     /// Unknown tokens are left as-is so they remain visible instead of silently blanking a field.</summary>
     private string ResolveVars(string text)
     {
@@ -1350,11 +2072,28 @@ public sealed class ExplorerAgent : IExplorerAgent
         return VariableTokenRegex.Replace(text, match =>
         {
             var key = match.Groups[1].Value.Trim();
-            return _variables.TryGetValue(key, out var value) && value is not null ? value : match.Value;
+            return !_secretKeys.Contains(key) && _variables.TryGetValue(key, out var value) && value is not null
+                ? value
+                : match.Value;
         });
     }
 
     private string? ResolveVarsOrNull(string? text) => text is null ? null : ResolveVars(text);
+
+    /// <summary>Resolves every token, secrets included. Only for a value about to be typed into the browser.</summary>
+    private string? ResolveForBrowser(string? text)
+    {
+        if (string.IsNullOrEmpty(text) || _variables.Count == 0)
+        {
+            return text;
+        }
+
+        return VariableTokenRegex.Replace(text, match =>
+        {
+            var key = match.Groups[1].Value.Trim();
+            return _variables.TryGetValue(key, out var value) && value is not null ? value : match.Value;
+        });
+    }
 
     private static string BuildScenarioMission(Scenario scenario, List<ScenarioStep> hintSteps, string? effectiveExpectedResult)
     {
@@ -1378,7 +2117,7 @@ public sealed class ExplorerAgent : IExplorerAgent
             sb.AppendLine($"Follow this intended flow IN ORDER, performing each step through the app's real UI: {string.Join("; ", flow)}.");
             sb.AppendLine("Carry out every one of those steps in sequence (after the preconditions are established). Only adapt a step when the corresponding control genuinely does not exist in the real UI (find the closest equivalent), and only skip one if it is truly impossible — never skip a step just to reach the end faster.");
         }
-        sb.AppendLine("If a login/OTP, cookie, location or promotional popup or modal is blocking the page, close or dismiss it first (click its ✕/close/'Not now'/'Skip' control, or press Escape) — do NOT try to log in; continue as a guest.");
+        sb.AppendLine("If a popup, modal, banner or sign-in wall gets in the way, handle it the way the scenario, its preconditions or the business context says; if they don't say, ask the user rather than deciding yourself.");
         sb.Append("Reproduce the intended end-to-end user journey via the real UI (do not take URL shortcuts that bypass steps). When every step is done and the intended outcome is reached — or it genuinely cannot be — finish.");
         return sb.ToString();
     }
@@ -1392,7 +2131,7 @@ public sealed class ExplorerAgent : IExplorerAgent
     /// the page underneath becomes interactable. Returns {found, closed, how}.
     /// </summary>
     private const string DismissOverlayJs = """
-        () => {
+        (mode) => {
           const cx = innerWidth / 2, cy = innerHeight / 2;
           const top = document.elementFromPoint(cx, cy);
           if (!top) return { found: false, diag: 'no element at center' };
@@ -1411,6 +2150,7 @@ public sealed class ExplorerAgent : IExplorerAgent
           const or = overlay.getBoundingClientRect();
           const big = or.width >= innerWidth * 0.3 && or.height >= innerHeight * 0.25;
           if (!big) return { found: false, diag: 'overlay=' + desc(overlay) + ' ' + Math.round(or.width) + 'x' + Math.round(or.height) + ' (too small)' };
+          if (mode === 'detect') return 'blocked|' + (overlay.innerText || '').replace(/[✕×✖"]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
 
           const vis = (n) => { const s = getComputedStyle(n); return s.display !== 'none' && s.visibility !== 'hidden' && parseFloat(s.opacity || '1') > 0; };
 
@@ -1499,6 +2239,21 @@ public sealed class ExplorerAgent : IExplorerAgent
         "type" => $"Enter \"{decision.Value}\" into \"{decision.Target ?? "field"}\"",
         "press" => $"Press {decision.Target ?? "Enter"}",
         "select" => $"Select \"{decision.Value}\" in the \"{decision.Target ?? "dropdown"}\" dropdown",
+        "double_click" => $"Double-click \"{decision.Target ?? "element"}\"",
+        "right_click" => $"Right-click \"{decision.Target ?? "element"}\"",
+        "hover" => $"Hover over \"{decision.Target ?? "element"}\"",
+        "clear" => $"Clear \"{decision.Target ?? "field"}\"",
+        "check" => $"Check \"{decision.Target ?? "checkbox"}\"",
+        "uncheck" => $"Uncheck \"{decision.Target ?? "checkbox"}\"",
+        "back" => "Go back to the previous page",
+        "reload" => "Reload the page",
+        "switch_tab" => $"Switch to browser tab {decision.Value ?? decision.Target}",
+        "scroll" => $"Scroll {(string.Equals(decision.Value ?? decision.Target, "up", StringComparison.OrdinalIgnoreCase) ? "up" : "down")}",
+        "wait_for" => $"Wait for \"{decision.Value ?? decision.Target}\"",
+        "accept_dialog" => "Accept the browser dialog",
+        "dismiss_dialog" => "Dismiss the browser dialog",
+        "drag" => $"Drag \"{decision.Target ?? "element"}\" onto \"{decision.DestinationTarget ?? "drop target"}\"",
+        "upload" => $"Upload {decision.Value} via \"{decision.Target ?? "file input"}\"",
         _ => decision.Action ?? "action",
     };
 
@@ -1625,7 +2380,7 @@ public sealed class ExplorerAgent : IExplorerAgent
         }
 
         // Drop the volatile ref handles, then collapse all whitespace so formatting jitter is ignored.
-        var withoutRefs = System.Text.RegularExpressions.Regex.Replace(snapshot, @"\[ref=e\d+\]", string.Empty);
+        var withoutRefs = System.Text.RegularExpressions.Regex.Replace(snapshot, @"\[ref=(?:f\d+)?e\d+\]", string.Empty);
         return System.Text.RegularExpressions.Regex.Replace(withoutRefs, @"\s+", " ").Trim();
     }
 
@@ -1674,7 +2429,10 @@ public sealed class ExplorerAgent : IExplorerAgent
     /// controls (buttons, inputs, dropdowns…), then everything else. Output stays in document order so
     /// nesting and section grouping still read correctly.
     /// </summary>
-    private static string TrimSnapshot(string snapshot, string? goal = null, int maxInterestingLines = 240, int maxChars = 12000)
+    private string TrimSnapshot(string snapshot, string? goal = null) =>
+        TrimSnapshotCore(snapshot, goal, maxChars: _snapshotBudget);
+
+    private static string TrimSnapshotCore(string snapshot, string? goal = null, int maxInterestingLines = 240, int maxChars = 12000)
     {
         if (string.IsNullOrEmpty(snapshot) || snapshot.Length <= maxChars)
         {
@@ -1806,7 +2564,7 @@ public sealed class ExplorerAgent : IExplorerAgent
     /// </summary>
     private static (string Role, string Name)? ExtractRoleAndName(string snapshot, string reference)
     {
-        var refToken = System.Text.RegularExpressions.Regex.Match(reference, "e\\d+");
+        var refToken = System.Text.RegularExpressions.Regex.Match(reference, "(?:f\\d+)?e\\d+");
         if (!refToken.Success)
         {
             return null;
@@ -1894,9 +2652,9 @@ public sealed class ExplorerAgent : IExplorerAgent
                     scenario.Id,
                     scenario.Title,
                     step.Order,
-                    step.Action,
+                    _redactor.Redact(step.Action),
                     status,
-                    detail,
+                    _redactor.RedactOrNull(detail),
                     url),
                 ct);
         }
@@ -1914,7 +2672,7 @@ public sealed class ExplorerAgent : IExplorerAgent
             await _live.PublishLogAsync(
                 session.TenantId,
                 session.Id,
-                new ExplorationLogEntry(level, message, _clock.UtcNow, id),
+                new ExplorationLogEntry(level, _redactor.Redact(message), _clock.UtcNow, id),
                 ct);
         }
         catch (Exception ex)
@@ -2072,7 +2830,7 @@ public sealed class ExplorerAgent : IExplorerAgent
             try
             {
                 await PublishLogAsync(session, "  • Saving DOM snapshot…", "info", ct);
-                var html = await browser.GetPageHtmlAsync(ct);
+                var html = _redactor.Redact(await browser.GetPageHtmlAsync(ct));
                 domPath = await _fileStorage.SaveAsync(
                     $"dom/{session.ProjectId}",
                     $"{Guid.NewGuid():N}.html",
@@ -2151,7 +2909,7 @@ public sealed class ExplorerAgent : IExplorerAgent
         }
 
         await browser.NavigateAsync(baseUrl, ct);
-        await WalkScenarioStepsAsync(session, browser, baseUrl, scenario, ct);
+        await RunScenarioWithRetriesAsync(session, browser, baseUrl, scenario, ct);
 
         session.Status = ExplorationStatus.Completed;
     }
@@ -2225,16 +2983,59 @@ public sealed class ExplorerAgent : IExplorerAgent
 
             await browser.NavigateAsync(baseUrl, ct);
 
-            await WalkScenarioStepsAsync(session, browser, baseUrl, ordered[i], ct, i + 1, ordered.Count);
+            await RunScenarioWithRetriesAsync(session, browser, baseUrl, ordered[i], ct, i + 1, ordered.Count);
         }
 
         session.Status = ExplorationStatus.Completed;
     }
 
+    /// <summary>
+    /// Runs a scenario and, when it fails and the workspace allows retries, runs it again in a fresh
+    /// browser session. Only the final attempt's step results are kept, so reports show one verdict.
+    /// </summary>
+    private async Task RunScenarioWithRetriesAsync(
+        ExplorationSession session,
+        PlaywrightBrowserService browser,
+        string baseUrl,
+        Scenario scenario,
+        CancellationToken ct,
+        int index = 1,
+        int total = 1)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            var final = await WalkScenarioStepsAsync(session, browser, baseUrl, scenario, ct, index, total);
+            if (final != nameof(StepRunStatus.Failed) || attempt >= _failedTestRetries || ct.IsCancellationRequested)
+            {
+                if (attempt > 0 && final != nameof(StepRunStatus.Failed))
+                {
+                    await PublishLogAsync(session, $"⚠ '{scenario.Title}' passed on retry {attempt} of {_failedTestRetries} — it may be flaky.", "warn", ct);
+                }
+
+                return;
+            }
+
+            await PublishLogAsync(
+                session,
+                $"↻ '{scenario.Title}' failed — retrying (retry {attempt + 1} of {_failedTestRetries}) in a fresh browser session.",
+                "warn",
+                ct);
+
+            await _db.ScenarioStepResults
+                .IgnoreQueryFilters()
+                .Where(r => r.SessionId == session.Id && r.ScenarioId == scenario.Id)
+                .ExecuteDeleteAsync(ct);
+
+            await browser.StartNewSessionAsync();
+            await browser.NavigateAsync(baseUrl, ct);
+        }
+    }
+
     /// <summary>Executes every step of a single scenario against the current browser page, recording per-step results.</summary>
     /// <param name="index">1-based position of this scenario in the run; 1 for a single-scenario run.</param>
     /// <param name="total">Number of scenarios the run will execute.</param>
-    private async Task WalkScenarioStepsAsync(
+    /// <returns>The scenario's verdict: Passed, Healed, Failed or Skipped.</returns>
+    private async Task<string> WalkScenarioStepsAsync(
         ExplorationSession session,
         PlaywrightBrowserService browser,
         string baseUrl,
@@ -2250,11 +3051,13 @@ public sealed class ExplorerAgent : IExplorerAgent
         if (orderedSteps.Count == 0)
         {
             await PublishScenarioAsync(session, scenario, index, total, 0, nameof(StepRunStatus.Skipped), ct);
-            return;
+            return nameof(StepRunStatus.Skipped);
         }
 
         // Per-scenario auto-heal policy governs whether this run may fall back to the AI at all.
         _autoHealEnabled = scenario.AutoHealEnabled;
+        _observations.Clear();
+        _lastTypedTarget = null;
 
         var recordedCount = orderedSteps.Count(s => !string.IsNullOrWhiteSpace(s.RecordedActionsJson));
         await PublishScenarioAsync(session, scenario, index, total, orderedSteps.Count, "Running", ct);
@@ -2299,10 +3102,10 @@ public sealed class ExplorerAgent : IExplorerAgent
                 SessionId = session.Id,
                 ScenarioId = scenario.Id,
                 StepOrder = step.Order,
-                Action = step.Action,
+                Action = _redactor.Redact(step.Action),
                 Status = result.Status,
-                Detail = result.Detail,
-                ChecksJson = result.Checks is { Count: > 0 } checks ? JsonSerializer.Serialize(checks, JsonOpts) : null,
+                Detail = _redactor.RedactOrNull(result.Detail),
+                ChecksJson = result.Checks is { Count: > 0 } checks ? _redactor.Redact(JsonSerializer.Serialize(checks, JsonOpts)) : null,
                 ScreenshotPath = screenshotPath,
                 Url = browser.CurrentUrl ?? currentUrl,
             });
@@ -2334,6 +3137,8 @@ public sealed class ExplorerAgent : IExplorerAgent
             $"{StepStatusGlyph(verdict)} '{scenario.Title}' — {final} ({executed}/{orderedSteps.Count} step(s) executed)",
             final == nameof(StepRunStatus.Failed) ? "error" : final == nameof(StepRunStatus.Passed) ? "success" : "warn",
             ct);
+
+        return final;
     }
 
     /// <summary>Ranks step outcomes so a scenario's verdict is the worst result any of its steps produced.</summary>
@@ -2367,6 +3172,7 @@ public sealed class ExplorerAgent : IExplorerAgent
         var history = new StringBuilder();
         var recorded = new List<(string Action, string? Expected)>();
         var missionOk = false;
+        var askedBeforeGivingUp = false;
 
         for (var turn = 1; turn <= maxTurns && !ct.IsCancellationRequested; turn++)
         {
@@ -2381,6 +3187,23 @@ public sealed class ExplorerAgent : IExplorerAgent
             }
 
             var action = decision.Action?.Trim().ToLowerInvariant();
+
+            if (action == "ask")
+            {
+                history.AppendLine(await HandleAskAsync(session, decision.Question, decision.QuestionContext ?? TrimThought(decision.Thought), turn, ct));
+                continue;
+            }
+
+            if (decision.MissionFailed && !askedBeforeGivingUp)
+            {
+                askedBeforeGivingUp = true;
+                var instruction = await AskBeforeGivingUpAsync(session, missionText, TrimThought(decision.Thought), ct);
+                if (instruction is not null)
+                {
+                    history.AppendLine($"- turn {turn}: you were about to give up; the user says: \"{instruction}\". Follow it and continue.");
+                    continue;
+                }
+            }
 
             if (decision.MissionComplete || action == "finish" || decision.MissionFailed)
             {
@@ -2426,12 +3249,42 @@ public sealed class ExplorerAgent : IExplorerAgent
         {
             var raw = await _llm.CompleteAsync(
                 MissionAgentPrompts.System,
-                MissionAgentPrompts.BuildUserPrompt(mission, pageUrl, snapshot, history, turn, maxTurns, _businessContext),
+                MissionAgentPrompts.BuildUserPrompt(mission, pageUrl, snapshot, history, turn, maxTurns, _businessContext, FormatAnsweredQuestions(_session)),
                 jsonMode: true,
                 ct);
 
             var json = JsonExtraction.ExtractJsonObject(raw);
-            return JsonSerializer.Deserialize<MissionAgentDecision>(json, JsonOpts);
+            MissionAgentDecision? legacy = null;
+            try
+            {
+                legacy = JsonSerializer.Deserialize<MissionAgentDecision>(json, JsonOpts);
+            }
+            catch (JsonException)
+            {
+                // The tolerant parser below still reads what it can.
+            }
+
+            // Same tolerant reading as the step agent, so models that word replies differently still work here.
+            var parsed = StepAgentDecisionParser.Parse(raw, snapshot, out _);
+            if (parsed?.Action is null)
+            {
+                return legacy;
+            }
+
+            return new MissionAgentDecision
+            {
+                Thought = parsed.Thought,
+                Action = parsed.Action,
+                Ref = parsed.Ref,
+                Target = parsed.Target,
+                Value = parsed.Value,
+                StepDescription = legacy?.StepDescription,
+                ExpectedResult = parsed.ExpectedResult,
+                MissionComplete = parsed.StepComplete,
+                MissionFailed = parsed.StepFailed,
+                Question = parsed.Question,
+                QuestionContext = parsed.QuestionContext,
+            };
         }
         catch (Exception ex)
         {
@@ -2710,12 +3563,35 @@ public sealed class ExplorerAgent : IExplorerAgent
     {
         var anyHealed = false;
 
+        // The verifier only sees the page after the step; this lets it see what the step changed.
+        var textBeforeStep = string.IsNullOrWhiteSpace(step.ExpectedResult) ? null : await SafeVisibleTextAsync(browser, ct);
+        var urlBeforeStep = browser.CurrentUrl;
+
+        // Popups appear at random moments (often seconds after load), so one is closed whenever it is in
+        // the way — unless this step's recording is the tester's decision to fill that popup in.
+        var fillsPopup = recorded.Any(IsPopupInteraction);
+        if (!fillsPopup)
+        {
+            await DismissPopupForReplayAsync(session, browser, step, ct);
+        }
+
         for (var i = 0; i < recorded.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
             var action = recorded[i];
 
             var (ok, failureDetail) = await ExecuteRecordedActionAsync(browser, action, baseUrl, ct);
+            if (!ok && !fillsPopup && await DismissPopupForReplayAsync(session, browser, step, ct))
+            {
+                (ok, failureDetail) = await ExecuteRecordedActionAsync(browser, action, baseUrl, ct);
+            }
+
+            if (!ok && IsPopupInteraction(action) && await browser.DetectBlockingPopupAsync(ct) is null)
+            {
+                await PublishLogAsync(session, $"  ↷ Step {step.Order}: the popup this step fills in did not appear this run — skipping its action.", "info", ct);
+                continue;
+            }
+
             if (ok)
             {
                 continue;
@@ -2845,7 +3721,7 @@ public sealed class ExplorerAgent : IExplorerAgent
             }
         }
 
-        var (matched, verificationReason) = await MatchesExpectedOutcomeAsync(session, browser, step, ct);
+        var (matched, verificationReason) = await MatchesExpectedOutcomeAsync(session, browser, step, ct, textBeforeStep, urlBeforeStep);
 
         // Compile the expectation now, while the page and the verdict for it are both in hand, so
         // future runs need no model. Compiling on a FAILING step is just as valuable as on a passing
@@ -3025,6 +3901,15 @@ public sealed class ExplorerAgent : IExplorerAgent
             return (true, null);
         }
 
+        // A recorded "dismiss this popup" decision: a no-op when the popup did not show up this time.
+        if (string.Equals(action.Kind?.Trim(), "dismiss_popup", StringComparison.OrdinalIgnoreCase))
+        {
+            var popup = await browser.DismissBlockingPopupAsync(ct);
+            return popup is { Cleared: false }
+                ? (false, $"The popup \"{popup.Value.Text}\" could not be closed.")
+                : (true, null);
+        }
+
         var resolvedTarget = string.Equals(action.Kind?.Trim(), "navigate", StringComparison.OrdinalIgnoreCase)
             ? ResolveNavigationTarget(browser.CurrentUrl ?? baseUrl, action.Target, baseUrl)
             : action.Target;
@@ -3039,7 +3924,27 @@ public sealed class ExplorerAgent : IExplorerAgent
             return (false, $"'{action.Kind}' is not an action the engine knows how to perform.");
         }
 
+        // A bare "press Enter" means the field just typed into. Sending it to the page instead loses it
+        // whenever focus moved in between — e.g. a popup was closed after typing.
+        var pressOnField = testAction.Kind == TestActionKind.Press
+            && (testAction.Target is null || testAction.Target.IsEmpty)
+            && _lastTypedTarget is not null;
+        if (pressOnField)
+        {
+            testAction.Target = new ElementTarget { Descriptor = _lastTypedTarget };
+        }
+
         var result = await _engine.ExecuteAsync(testAction, _runContext, ct);
+        if (pressOnField && (!result.Performed || !result.Passed))
+        {
+            testAction.Target = null;
+            result = await _engine.ExecuteAsync(testAction, _runContext, ct);
+        }
+
+        if (result.Performed && result.Passed && testAction.Kind == TestActionKind.Type)
+        {
+            _lastTypedTarget = action.Target;
+        }
 
         if (result.Unsupported is not null)
         {
@@ -3177,6 +4082,12 @@ public sealed class ExplorerAgent : IExplorerAgent
 
             var action = decision.Action?.Trim().ToLowerInvariant();
 
+            if (action == "ask")
+            {
+                history.AppendLine(await HandleAskAsync(session, decision, turn, ct));
+                continue;
+            }
+
             if (decision.StepComplete || action == "finish" || decision.StepFailed)
             {
                 if (decision.StepFailed)
@@ -3250,14 +4161,39 @@ public sealed class ExplorerAgent : IExplorerAgent
     {
         try
         {
-            var raw = await _llm.CompleteAsync(
-                StepAgentPrompts.System,
-                StepAgentPrompts.BuildUserPrompt(ResolveVars(step.Action), ResolveVarsOrNull(step.ExpectedResult), pageUrl, snapshot, history, turn, maxTurns, _businessContext),
-                jsonMode: true,
-                ct);
+            var userPrompt = StepAgentPrompts.BuildUserPrompt(
+                ResolveVars(step.Action), ResolveVarsOrNull(step.ExpectedResult), pageUrl, snapshot, history, turn, maxTurns, _businessContext, _snapshotBudget + 2000, _testFileNames, FormatAnsweredQuestions(_session),
+                canAsk: _session is not null && CanAskUser(_session));
 
-            var json = JsonExtraction.ExtractJsonObject(raw);
-            return JsonSerializer.Deserialize<StepAgentDecision>(json, JsonOpts);
+            var raw = await _llm.CompleteAsync(StepAgentPrompts.System, userPrompt, jsonMode: true, ct);
+            var decision = StepAgentDecisionParser.Parse(raw, snapshot, out var problem);
+
+            // Weaker or differently-trained models get the format wrong far more often than the decision.
+            // Telling them exactly what was wrong fixes most replies in one extra call, where silently
+            // re-asking the same question tends to reproduce the same mistake.
+            if (problem is not null)
+            {
+                _logger.LogInformation("Step agent reply rejected on turn {Turn} ({Problem}); asking the model to correct it.", turn, problem);
+                var repairPrompt = userPrompt
+                    + "\n\nYour previous reply was rejected: " + problem
+                    + "\nPrevious reply: " + Truncate(raw, 600)
+                    + "\nReply again with ONE corrected JSON object only.";
+                raw = await _llm.CompleteAsync(StepAgentPrompts.System, repairPrompt, jsonMode: true, ct);
+                decision = StepAgentDecisionParser.Parse(raw, snapshot, out problem);
+            }
+
+            if (problem is not null || decision is null)
+            {
+                _logger.LogWarning("Step agent produced no usable decision on turn {Turn}: {Problem}", turn, problem);
+                return null;
+            }
+
+            if (decision.Value is { } value)
+            {
+                decision.Value = RedactedTokenRegex.Replace(value, m => "{{" + m.Groups[1].Value + "}}");
+            }
+
+            return decision;
         }
         catch (Exception ex) when (ex is not LlmUnavailableException)
         {
@@ -3338,6 +4274,63 @@ public sealed class ExplorerAgent : IExplorerAgent
                     await browser.WaitAsync(800, ct);
                     return (true, false, "waited for the page to settle", null);
 
+                case "double_click" or "right_click" or "hover" or "clear" or "check" or "uncheck":
+                    var elementKind = decision.Action!.Trim().ToLowerInvariant() switch
+                    {
+                        "double_click" => TestActionKind.DoubleClick,
+                        "right_click" => TestActionKind.RightClick,
+                        "hover" => TestActionKind.Hover,
+                        "clear" => TestActionKind.Clear,
+                        "check" => TestActionKind.Check,
+                        _ => TestActionKind.Uncheck,
+                    };
+                    var elementDescriptor = await ResolveActionDescriptorAsync(browser, decision, ct);
+                    var elementTarget = await BuildAgentTargetAsync(browser, decision.Ref, elementDescriptor ?? step.Action, ct);
+                    var elementDone = await RunAgentActionAsync(elementKind, elementTarget, value: null, ct);
+                    return elementDone.Ok
+                        ? (true, elementDone.ViaFallback, $"{decision.Action} \"{elementTarget}\"",
+                            new RecordedStepAction { Kind = decision.Action!, Target = elementDescriptor })
+                        : (false, false, $"could not {decision.Action} {decision.Ref ?? decision.Target}", null);
+
+                case "back" or "reload":
+                    var pageKind = decision.Action == "back" ? TestActionKind.Back : TestActionKind.Reload;
+                    var pageDone = await RunAgentActionAsync(pageKind, target: null, value: null, ct);
+                    return pageDone.Ok
+                        ? (true, false, $"{decision.Action} → {browser.CurrentUrl}", new RecordedStepAction { Kind = decision.Action! })
+                        : (false, false, $"could not {decision.Action}", null);
+
+                case "accept_dialog" or "dismiss_dialog":
+                    // The direct engine answers dialogs by policy as they open; there is nothing pending to answer.
+                    return (true, false, "browser dialogs are answered automatically in this mode", null);
+
+                case "upload":
+                    var uploadDescriptor = await ResolveActionDescriptorAsync(browser, decision, ct);
+                    var uploadTarget = await BuildAgentTargetAsync(browser, decision.Ref, uploadDescriptor ?? step.Action, ct);
+                    var uploaded = await RunAgentActionAsync(TestActionKind.Upload, uploadTarget, decision.Value, ct);
+                    return uploaded.Ok
+                        ? (true, uploaded.ViaFallback, $"attached {decision.Value}", new RecordedStepAction { Kind = "upload", Target = uploadDescriptor, Value = decision.Value })
+                        : (false, false, $"could not upload {decision.Value} (use only listed test file names)", null);
+
+                case "drag":
+                    var dragDescriptor = await ResolveActionDescriptorAsync(browser, decision, ct);
+                    var dragTarget = await BuildAgentTargetAsync(browser, decision.Ref, dragDescriptor ?? step.Action, ct);
+                    var dropDescriptor = decision.DestinationTarget;
+                    if (string.IsNullOrWhiteSpace(dropDescriptor))
+                    {
+                        return (false, false, "drag needs \"destination\" — the visible name of the drop target", null);
+                    }
+
+                    var dropOptions = new Dictionary<string, string?> { [ActionOptionNames.DropTarget] = dropDescriptor };
+                    var dropped = await RunAgentActionAsync(TestActionKind.DragAndDrop, dragTarget, value: null, ct, dropOptions);
+                    return dropped.Ok
+                        ? (true, dropped.ViaFallback, $"dragged \"{dragTarget}\" onto \"{dropDescriptor}\"",
+                            new RecordedStepAction { Kind = "drag", Target = dragDescriptor, Options = dropOptions })
+                        : (false, false, $"could not drag onto \"{dropDescriptor}\"", null);
+
+                case "scroll" or "wait_for":
+                    await browser.WaitAsync(800, ct);
+                    return (true, false, "the snapshot already covers the whole page; waited for it to settle instead", null);
+
                 default:
                     return (false, false, $"unknown action '{decision.Action}'", null);
             }
@@ -3354,17 +4347,21 @@ public sealed class ExplorerAgent : IExplorerAgent
         TestActionKind kind,
         ElementTarget? target,
         string? value,
-        CancellationToken ct)
+        CancellationToken ct,
+        IReadOnlyDictionary<string, string?>? options = null)
     {
         if (_runContext is null)
         {
             return (false, false);
         }
 
-        var result = await _engine.ExecuteAsync(
-            new TestAction { Kind = kind, Target = target, Value = value },
-            _runContext,
-            ct);
+        var testAction = new TestAction { Kind = kind, Target = target, Value = value };
+        foreach (var (key, optionValue) in options ?? new Dictionary<string, string?>())
+        {
+            testAction.Options[key] = optionValue;
+        }
+
+        var result = await _engine.ExecuteAsync(testAction, _runContext, ct);
 
         // "Healed" here means a candidate after the first one won — i.e. the precise locator missed
         // and something further down the list rescued the action. That is exactly what the caller
@@ -3656,7 +4653,9 @@ public sealed class ExplorerAgent : IExplorerAgent
         ExplorationSession session,
         PlaywrightBrowserService browser,
         ScenarioStep step,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? textBeforeStep = null,
+        string? urlBeforeStep = null)
     {
         if (string.IsNullOrWhiteSpace(step.ExpectedResult))
         {
@@ -3685,7 +4684,47 @@ public sealed class ExplorerAgent : IExplorerAgent
             return (true, "expected result confirmed on the page");
         }
 
-        return await VerifyExpectedOutcomeAsync(session, step, browser.CurrentUrl, snapshot, $"{pageText}\n{visibleText}", ct);
+        return await VerifyExpectedOutcomeAsync(
+            session, step, browser.CurrentUrl, snapshot, $"{pageText}\n{visibleText}", ct,
+            textBeforeStep is null ? null : DescribePageChanges(textBeforeStep, visibleText, urlBeforeStep, browser.CurrentUrl));
+    }
+
+    /// <summary>Lines of visible text the step's actions made appear or disappear, plus any URL change.</summary>
+    internal static string DescribePageChanges(string before, string after, string? urlBefore, string? urlAfter)
+    {
+        static List<string> Lines(string text) => text
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        static string Show(IEnumerable<string> lines, int total) =>
+            string.Join(" | ", lines.Take(40).Select(l => l.Length > 80 ? l[..80] + "…" : l))
+            + (total > 40 ? $" … ({total} lines in total)" : string.Empty);
+
+        var beforeLines = Lines(before);
+        var afterLines = Lines(after);
+        var beforeSet = beforeLines.ToHashSet(StringComparer.Ordinal);
+        var afterSet = afterLines.ToHashSet(StringComparer.Ordinal);
+        var appeared = afterLines.Where(l => !beforeSet.Contains(l)).ToList();
+        var disappeared = beforeLines.Where(l => !afterSet.Contains(l)).ToList();
+
+        var sb = new StringBuilder();
+        if (!string.Equals(urlBefore, urlAfter, StringComparison.Ordinal))
+        {
+            sb.AppendLine($"URL changed from {urlBefore} to {urlAfter}");
+        }
+
+        if (appeared.Count == 0 && disappeared.Count == 0)
+        {
+            sb.AppendLine("No visible text changed.");
+        }
+        else
+        {
+            sb.AppendLine(appeared.Count > 0 ? $"Appeared: {Show(appeared, appeared.Count)}" : "Appeared: nothing");
+            sb.AppendLine(disappeared.Count > 0 ? $"Disappeared: {Show(disappeared, disappeared.Count)}" : "Disappeared: nothing");
+        }
+
+        return sb.ToString().TrimEnd();
     }
 
     /// <summary>

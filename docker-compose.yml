@@ -32,6 +32,18 @@ services:
       timeout: 3s
       retries: 5
 
+  # Dev-mode Vault (in-memory, fixed root token). Then run tools/vault/setup-dev.sh.
+  vault:
+    image: hashicorp/vault:1.18
+    container_name: atip-vault
+    cap_add:
+      - IPC_LOCK
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: dev-root
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    ports:
+      - "127.0.0.1:8200:8200"
+
 volumes:
   atip-postgres-data:
   atip-redis-data:
