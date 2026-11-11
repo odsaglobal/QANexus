@@ -100,11 +100,11 @@ export function ExplorerTab({ projectId }: { projectId: string }) {
     enabled: Boolean(sessionId),
     refetchInterval: (query) => {
       const s = query.state.data?.status;
-      return s === 'Pending' || s === 'Running' ? 2500 : false;
+      return s === 'Pending' || s === 'Running' || s === 'AwaitingInput' ? 2500 : false;
     },
   });
 
-  const isLive = session?.status === 'Pending' || session?.status === 'Running';
+  const isLive = session?.status === 'Pending' || session?.status === 'Running' || session?.status === 'AwaitingInput';
   const stream = useExplorationStream(sessionId, Boolean(sessionId) && isLive);
 
   // When a run finishes, resolve which scenario holds the results and refresh scenario data.
@@ -306,7 +306,7 @@ function LivePanel({
   steps: ExplorationLiveStep[];
   tabs: ExplorationLiveTab[];
 }) {
-  const isLive = status === 'Pending' || status === 'Running';
+  const isLive = status === 'Pending' || status === 'Running' || status === 'AwaitingInput';
   return (
     <Card className="overflow-hidden">
       <CardHeader className="pb-2">

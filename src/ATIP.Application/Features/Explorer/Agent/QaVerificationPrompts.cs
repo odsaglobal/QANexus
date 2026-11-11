@@ -27,9 +27,27 @@ public static class QaVerificationPrompts
           violated by the real number, that check FAILS.
         - Ordering/sorting: ascending/descending by price, name, rating, date — verify using the real
           values in their displayed order (e.g. prices should be non-increasing for "high to low").
-        - Navigation/URL: the URL, route, or page changed to the expected destination.
+        - Navigation/URL: the URL, route, or page changed to the expected destination. URL parameters
+          are often percent-encoded, even twice (%255B%255D = [], %3D = =), and may use name[]=value
+          array notation — decode before judging (facets.brand%255B%255D%3DHP means facets.brand=HP).
         - Validation/errors: the correct error, empty-state, success or confirmation message appears.
         - Data correctness: shown values match what was entered/selected/expected.
+
+        STATE CHANGES ARE JUDGED BY THE RESULTING STATE: you see the page only AFTER the step, so you can
+        never observe a transition happening. "The facet expands", "the menu opens", "the filter is
+        applied", "the item is selected" PASS when the page now shows that state (e.g. the facet's options
+        are listed under its heading). Never fail a condition because there is "no indication it happened
+        as a result of the click" when the described end state is present. When the expected result says
+        what the new state looks like ("expands, displaying HP, Lenovo…"), seeing that content IS the
+        evidence for the state — do not split it into a separate "is it expanded/open" condition, and do
+        not demand attributes such as aria-expanded that the snapshot may not expose.
+
+        THE EVIDENCE IS FLAT TEXT: the snapshot and visible text are plain lists. They never show
+        indentation, nesting, layout, icons, chevrons or whether a section is open — so "the structure is
+        flat", "no nested options" or "no expanded state is shown" is NEVER evidence against a condition.
+        Content that only renders while a section is open (its options listed next to its heading) proves
+        the section is open. Missing evidence means content that should be present is absent — not a
+        visual detail this format cannot carry.
 
         IMPORTANT — fallback/fuzzy-match results are NOT an empty state: many real sites, when a search
         finds nothing for the exact query, silently substitute a DIFFERENT query's results (e.g. matching
@@ -43,6 +61,17 @@ public static class QaVerificationPrompts
         supporting evidence. If evidence is missing, contradicted, or you are not certain, mark it FAILED
         — never assume success or give the benefit of the doubt. The OVERALL result is satisfied ONLY if
         EVERY condition passes.
+
+        COMPARISONS WITH EARLIER STATE: conditions such as "fewer/more results than before", "lower than
+        the unfiltered search", "the count changed", "the same item as earlier" compare the current page
+        with an EARLIER page. Judge them using "Earlier observations in this run" (URLs and counts recorded
+        after previous steps) — e.g. 3,393 results before the filter and 349 after means the count is lower.
+
+        ASKING A HUMAN: only when a condition cannot be judged from ANY of the evidence — the needed value
+        was never displayed and is not in the earlier observations — set "question" to ONE short yes/no
+        question a tester watching the run can answer (e.g. "Before filtering, did the 'laptop' search show
+        more than 349 results?"), and mark that check failed. Never ask about something the evidence
+        already shows, and leave "question" empty whenever every condition could be judged.
 
         The "actual" field describes ONLY what the page really showed, as a reader who already knows the
         expected result: lead with the concrete observed values (numbers, text, URL). Do NOT restate or
@@ -59,7 +88,8 @@ public static class QaVerificationPrompts
           "checks": [
             {"description": "the exact condition checked", "passed": true|false,
              "evidence": "the concrete number/text/URL that supports the verdict, or why it failed"}
-          ]
+          ],
+          "question": ""
         }
         """;
 
@@ -68,7 +98,9 @@ public static class QaVerificationPrompts
         string stepAction,
         string currentUrl,
         string snapshot,
-        string pageData)
+        string pageData,
+        string? earlierObservations = null,
+        string? pageChanges = null)
     {
         const int maxSnapshot = 8_000;
         const int maxData = 6_000;
@@ -84,6 +116,15 @@ public static class QaVerificationPrompts
 
             Extracted page data (URL, title, detected counts, list sizes, visible text):
             {data}
+
+            Earlier observations in this run (oldest first):
+            {(string.IsNullOrWhiteSpace(earlierObservations) ? "(none recorded)" : earlierObservations)}
+            {(string.IsNullOrWhiteSpace(pageChanges) ? "" : $"""
+
+            What THIS step's actions changed on the page (visible text before vs after — direct evidence of
+            cause and effect; options that appeared after clicking a heading prove that section opened):
+            {pageChanges}
+            """)}
 
             Interactive elements snapshot:
             {snap}

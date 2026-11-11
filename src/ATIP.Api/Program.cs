@@ -125,7 +125,7 @@ builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new OpenApiInfo
     {
-        Title = "Autonomous AI Test Intelligence Platform (ATIP) API",
+        Title = "Patterns.ai API",
         Version = "v1",
         Description = "Enterprise API for AI-driven autonomous test automation."
     });
@@ -157,7 +157,7 @@ app.UseExceptionHandler();
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
-    app.UseSwaggerUI(ui => ui.SwaggerEndpoint("/swagger/v1/swagger.json", "ATiP API v1"));
+    app.UseSwaggerUI(ui => ui.SwaggerEndpoint("/swagger/v1/swagger.json", "Patterns.ai API v1"));
     await app.ApplyMigrationsAsync();
 }
 

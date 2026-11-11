@@ -12,11 +12,13 @@ public sealed class CreateEnvironmentCommandHandler : IRequestHandler<CreateEnvi
 {
     private readonly IApplicationDbContext _db;
     private readonly ICurrentUser _currentUser;
+    private readonly ISecretProtector _protector;
 
-    public CreateEnvironmentCommandHandler(IApplicationDbContext db, ICurrentUser currentUser)
+    public CreateEnvironmentCommandHandler(IApplicationDbContext db, ICurrentUser currentUser, ISecretProtector protector)
     {
         _db = db;
         _currentUser = currentUser;
+        _protector = protector;
     }
 
     public async Task<EnvironmentDto> Handle(CreateEnvironmentCommand request, CancellationToken cancellationToken)
@@ -35,18 +37,13 @@ public sealed class CreateEnvironmentCommandHandler : IRequestHandler<CreateEnvi
             .Select(e => e.VariablesJson)
             .ToListAsync(cancellationToken);
 
-        var seededKeys = new Dictionary<string, EnvironmentVariableDto>(StringComparer.Ordinal);
+        var seededKeys = new Dictionary<string, StoredEnvironmentVariable>(StringComparer.Ordinal);
         foreach (var json in siblingVariablesJson)
         {
-            foreach (var variable in EnvironmentVariableSerialization.Parse(json))
+            foreach (var variable in EnvironmentVariableSerialization.ParseStored(json))
             {
                 // Inherit the key + its type from siblings, but start with an empty value.
-                seededKeys.TryAdd(variable.Key, new EnvironmentVariableDto
-                {
-                    Key = variable.Key,
-                    Value = string.Empty,
-                    Type = variable.Type,
-                });
+                seededKeys.TryAdd(variable.Key, new StoredEnvironmentVariable(variable.Key, variable.Type, string.Empty, null));
             }
         }
 
@@ -58,7 +55,7 @@ public sealed class CreateEnvironmentCommandHandler : IRequestHandler<CreateEnvi
             Type = Enum.Parse<EnvironmentType>(request.Type, ignoreCase: true),
             BaseUrl = request.BaseUrl.Trim(),
             IsDefault = request.IsDefault,
-            VariablesJson = EnvironmentVariableSerialization.Serialize(seededKeys.Values)
+            VariablesJson = EnvironmentVariableSerialization.SerializeStored(seededKeys.Values, _protector)
         };
 
         if (request.IsDefault)

@@ -70,6 +70,30 @@ public class ExplorationSession : AuditableEntity, ITenantScoped, ISoftDeletable
 
     public string? ErrorMessage { get; set; }
 
+    /// <summary>
+    /// The question the agent is currently blocked on, or null when it is not blocked.
+    /// </summary>
+    /// <remarks>
+    /// Held on the session rather than in memory because the asker and the answerer are in different
+    /// processes in every sense that matters: the agent runs on a background worker while the answer
+    /// arrives on an HTTP request. The database is the only thing both can see.
+    /// </remarks>
+    public string? PendingQuestion { get; set; }
+
+    /// <summary>Why the agent could not decide for itself — shown alongside the question.</summary>
+    public string? PendingQuestionContext { get; set; }
+
+    public DateTimeOffset? PendingQuestionAskedAtUtc { get; set; }
+
+    /// <summary>The user's reply, which releases the agent to continue.</summary>
+    public string? PendingQuestionAnswer { get; set; }
+
+    /// <summary>
+    /// Every question and answer so far, as JSON. Carried into each subsequent prompt so the agent
+    /// treats an answer as settled instead of asking the same thing again on the next turn.
+    /// </summary>
+    public string? AnsweredQuestionsJson { get; set; }
+
     public bool IsDeleted { get; set; }
 
     public DateTimeOffset? DeletedAtUtc { get; set; }

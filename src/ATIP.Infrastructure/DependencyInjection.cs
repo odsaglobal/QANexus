@@ -61,6 +61,25 @@ public static class DependencyInjection
         services.AddScoped<INotificationService, Notifications.NotificationService>();
 
         services.AddSingleton<ISecretProtector, AesGcmSecretProtector>();
+        services.AddHostedService<LegacySecretEncryptionService>();
+
+        services.Configure<VaultOptions>(configuration.GetSection(VaultOptions.SectionName));
+        var vaultOptions = configuration.GetSection(VaultOptions.SectionName).Get<VaultOptions>() ?? new VaultOptions();
+        services.AddHttpClient(HashiCorpVaultSecretStore.HttpClientName, client =>
+        {
+            if (Uri.TryCreate(vaultOptions.Address, UriKind.Absolute, out var address))
+            {
+                client.BaseAddress = new Uri(address.ToString().TrimEnd('/') + "/");
+            }
+
+            if (!string.IsNullOrWhiteSpace(vaultOptions.Namespace))
+            {
+                client.DefaultRequestHeaders.Add("X-Vault-Namespace", vaultOptions.Namespace);
+            }
+
+            client.Timeout = TimeSpan.FromSeconds(vaultOptions.TimeoutSeconds);
+        });
+        services.AddSingleton<ISecretStore, HashiCorpVaultSecretStore>();
 
         // AI, documents and storage.
         var llmOptions = configuration.GetSection(LlmOptions.SectionName).Get<LlmOptions>()
@@ -138,6 +157,7 @@ public static class DependencyInjection
         services.AddScoped<IJiraClient, JiraClient>();
         services.AddScoped<IDocumentTextExtractor, DocumentTextExtractor>();
         services.AddSingleton<IFileStorage, LocalFileStorage>();
+        services.AddSingleton<ITestFileStore, LocalTestFileStore>();
 
         // Application Explorer: queue (singleton shared instance), agent (scoped), background service.
         var explorationQueue = new ExplorationQueue();

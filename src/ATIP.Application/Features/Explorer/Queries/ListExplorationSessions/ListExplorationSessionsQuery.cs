@@ -31,7 +31,7 @@ public sealed class ListExplorationSessionsQueryHandler
         if (request.ActiveOnly)
         {
             query = query.Where(s =>
-                s.Status == ExplorationStatus.Pending || s.Status == ExplorationStatus.Running);
+                s.Status == ExplorationStatus.Pending || s.Status == ExplorationStatus.Running || s.Status == ExplorationStatus.AwaitingInput);
         }
 
         var sessions = await query

@@ -411,14 +411,14 @@ public sealed partial class PlaywrightBrowserService
     /// frame scope. Returns null when the strategy has no browser equivalent (mobile dialects,
     /// visual matching).
     /// </summary>
-    private ILocator? BuildLocator(LocatorStrategy strategy, string value)
+    private ILocator? BuildLocator(LocatorStrategy strategy, string value, ElementScope? explicitScope = null, bool exact = false)
     {
         if (_page is null || string.IsNullOrWhiteSpace(value))
         {
             return null;
         }
 
-        var scope = CurrentScope;
+        var scope = explicitScope ?? CurrentScope;
 
         switch (strategy)
         {
@@ -435,23 +435,23 @@ public sealed partial class PlaywrightBrowserService
             case LocatorStrategy.NearbyLabel:
                 return scope.Locator($"[aria-label={Quote(value)}]");
             case LocatorStrategy.Placeholder:
-                return scope.GetByPlaceholder(value);
+                return scope.GetByPlaceholder(value, exact);
             case LocatorStrategy.Text:
-                return scope.GetByText(value);
+                return scope.GetByText(value, exact);
             case LocatorStrategy.Label:
-                return scope.GetByLabel(value);
+                return scope.GetByLabel(value, exact);
             case LocatorStrategy.AltText:
-                return scope.GetByAltText(value);
+                return scope.GetByAltText(value, exact);
             case LocatorStrategy.Title:
-                return scope.GetByTitle(value);
+                return scope.GetByTitle(value, exact);
             case LocatorStrategy.Role:
                 var parts = value.Split(':', 2);
                 if (parts.Length == 2 && Enum.TryParse<AriaRole>(parts[0], ignoreCase: true, out var role))
                 {
-                    return scope.GetByRole(role, parts[1]);
+                    return scope.GetByRole(role, parts[1], exact);
                 }
 
-                return scope.GetByText(parts[^1]);
+                return scope.GetByText(parts[^1], exact);
             default:
                 // Visual and the mobile selector dialects are not addressable by Playwright.
                 return null;
@@ -484,29 +484,100 @@ public sealed partial class PlaywrightBrowserService
             return null;
         }
 
+        // Name/text strategies match substrings by default, so "HP" also hits every "HP 15 Laptop"
+        // product link. An exact match is always preferred; the substring match is the fallback.
+        var exactLocator = BuildLocator(strategy, value, exact: true);
+
         try
         {
+            // timeoutMs 0 = look only at what is rendered now (Playwright treats a 0 wait as "forever").
             if (index is { } position)
             {
                 var nth = locator.Nth(position);
-                await nth.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached, Timeout = timeoutMs });
-                return nth;
+                if (timeoutMs > 0)
+                {
+                    await nth.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached, Timeout = timeoutMs });
+                }
+                else if (await locator.CountAsync() <= position)
+                {
+                    return null;
+                }
+
+                return exactLocator is not null && await exactLocator.CountAsync() > position ? exactLocator.Nth(position) : nth;
             }
 
-            await locator.First.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached, Timeout = timeoutMs });
-
-            if (allowAmbiguous)
+            if (timeoutMs > 0)
             {
-                return locator.First;
+                await locator.First.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached, Timeout = timeoutMs });
+            }
+
+            var exactMatches = exactLocator is null ? 0 : await exactLocator.CountAsync();
+            if (exactMatches == 1 || (allowAmbiguous && exactMatches > 1))
+            {
+                return exactLocator!.First;
             }
 
             var matches = await locator.CountAsync();
+            if (allowAmbiguous)
+            {
+                return matches > 0 ? locator.First : null;
+            }
+
             return matches == 1 ? locator.First : null;
         }
         catch
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Looks for a unique match inside the page's iframes (one level deep) without changing the
+    /// session's frame scope. Recordings made while exploring do not know which frame an element
+    /// lived in, so replay has to look there itself when the top-level document has no match.
+    /// </summary>
+    public async Task<ILocator?> ResolveInChildFramesAsync(
+        LocatorStrategy strategy,
+        string value,
+        int timeoutMs,
+        CancellationToken ct = default)
+    {
+        if (_page is null || _frameSelectors.Count > 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            var frameCount = await _page.Locator("iframe").CountAsync();
+            for (var i = 0; i < Math.Min(frameCount, 10); i++)
+            {
+                var locator = BuildLocator(strategy, value, ElementScope.Of(_page.FrameLocator($"iframe >> nth={i}")));
+                if (locator is null)
+                {
+                    return null;
+                }
+
+                try
+                {
+                    await locator.First.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached, Timeout = timeoutMs });
+                    if (await locator.CountAsync() == 1)
+                    {
+                        return locator.First;
+                    }
+                }
+                catch (TimeoutException)
+                {
+                    // Not in this frame; try the next one.
+                }
+            }
+        }
+        catch (PlaywrightException)
+        {
+            // The page navigated or a frame detached mid-search.
+        }
+
+        return null;
     }
 
     /// <summary>Number of elements a strategy/value pair matches in the current scope.</summary>
@@ -601,13 +672,31 @@ public sealed partial class PlaywrightBrowserService
     /// <summary>Attaches files to a file input. Missing paths are rejected before Playwright is asked.</summary>
     public async Task<bool> UploadFilesAsync(ILocator target, IReadOnlyList<string> paths, CancellationToken ct = default)
     {
-        if (paths.Count == 0 || paths.Any(p => !File.Exists(p)))
+        if (_page is null || paths.Count == 0 || paths.Any(p => !File.Exists(p)))
         {
             return false;
         }
 
-        await target.SetInputFilesAsync([.. paths]);
-        return true;
+        var isFileInput = await target.EvaluateAsync<bool>("el => el.tagName === 'INPUT' && el.type === 'file'");
+        if (isFileInput)
+        {
+            await target.SetInputFilesAsync([.. paths]);
+            return true;
+        }
+
+        // Styled upload buttons hide the real input; clicking them opens the native file chooser.
+        try
+        {
+            var chooser = await _page.RunAndWaitForFileChooserAsync(
+                () => target.ClickAsync(),
+                new PageRunAndWaitForFileChooserOptions { Timeout = 5000 });
+            await chooser.SetFilesAsync([.. paths]);
+            return true;
+        }
+        catch (TimeoutException)
+        {
+            return false;
+        }
     }
 
     /// <summary>
@@ -666,24 +755,34 @@ public sealed partial class PlaywrightBrowserService
         public ILocator Locator(string selector) =>
             _page is not null ? _page.Locator(selector) : _frame!.Locator(selector);
 
-        public ILocator GetByText(string text) =>
-            _page is not null ? _page.GetByText(text) : _frame!.GetByText(text);
-
-        public ILocator GetByLabel(string text) =>
-            _page is not null ? _page.GetByLabel(text) : _frame!.GetByLabel(text);
-
-        public ILocator GetByPlaceholder(string text) =>
-            _page is not null ? _page.GetByPlaceholder(text) : _frame!.GetByPlaceholder(text);
-
-        public ILocator GetByAltText(string text) =>
-            _page is not null ? _page.GetByAltText(text) : _frame!.GetByAltText(text);
-
-        public ILocator GetByTitle(string text) =>
-            _page is not null ? _page.GetByTitle(text) : _frame!.GetByTitle(text);
-
-        public ILocator GetByRole(AriaRole role, string name) =>
+        public ILocator GetByText(string text, bool exact = false) =>
             _page is not null
-                ? _page.GetByRole(role, new PageGetByRoleOptions { Name = name, Exact = false })
-                : _frame!.GetByRole(role, new FrameLocatorGetByRoleOptions { Name = name, Exact = false });
+                ? _page.GetByText(text, new PageGetByTextOptions { Exact = exact })
+                : _frame!.GetByText(text, new FrameLocatorGetByTextOptions { Exact = exact });
+
+        public ILocator GetByLabel(string text, bool exact = false) =>
+            _page is not null
+                ? _page.GetByLabel(text, new PageGetByLabelOptions { Exact = exact })
+                : _frame!.GetByLabel(text, new FrameLocatorGetByLabelOptions { Exact = exact });
+
+        public ILocator GetByPlaceholder(string text, bool exact = false) =>
+            _page is not null
+                ? _page.GetByPlaceholder(text, new PageGetByPlaceholderOptions { Exact = exact })
+                : _frame!.GetByPlaceholder(text, new FrameLocatorGetByPlaceholderOptions { Exact = exact });
+
+        public ILocator GetByAltText(string text, bool exact = false) =>
+            _page is not null
+                ? _page.GetByAltText(text, new PageGetByAltTextOptions { Exact = exact })
+                : _frame!.GetByAltText(text, new FrameLocatorGetByAltTextOptions { Exact = exact });
+
+        public ILocator GetByTitle(string text, bool exact = false) =>
+            _page is not null
+                ? _page.GetByTitle(text, new PageGetByTitleOptions { Exact = exact })
+                : _frame!.GetByTitle(text, new FrameLocatorGetByTitleOptions { Exact = exact });
+
+        public ILocator GetByRole(AriaRole role, string name, bool exact = false) =>
+            _page is not null
+                ? _page.GetByRole(role, new PageGetByRoleOptions { Name = name, Exact = exact })
+                : _frame!.GetByRole(role, new FrameLocatorGetByRoleOptions { Name = name, Exact = exact });
     }
 }

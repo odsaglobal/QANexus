@@ -32,12 +32,14 @@ public static class MissionAgentPrompts
         Return ONLY a JSON object — no markdown:
         {
           "thought": "one short sentence: what you're doing and why",
-          "action": "navigate|click|type|select|press|wait|finish",
+          "action": "navigate|click|type|select|press|wait|ask|finish",
           "ref": "eN — REQUIRED for click/type/select; must exist in the snapshot",
           "target": "the element's testid if it has one, else its exact visible name (click/type/select); the url/path for navigate; the key name for press",
           "value": "text to type (type), or the EXACT option label copied from (options: …) (select)",
           "stepDescription": "the scenario step this action represents",
           "expectedResult": "what should be observably true after this step",
+          "question": "ask only: one specific question for the user",
+          "questionContext": "ask only: the options you can see, quoted from the snapshot",
           "missionComplete": false,
           "missionFailed": false
         }
@@ -50,8 +52,20 @@ public static class MissionAgentPrompts
                      uses "select", never "click".
         - "press"  — keyboard keys; put the key (e.g. "Enter") in "target".
         - "wait"   — let the page load/settle, then observe again (no step is recorded for waits).
+        - "ask"    — pause and ask the person watching ONE question (rules below).
         - "finish" — the mission is accomplished ("missionComplete": true) or is genuinely impossible
                      on this app ("missionFailed": true).
+
+        ── ASKING THE USER ──────────────────────────────────────────────────
+        The recorded scenario replays unattended, so a guess is worse than a question. Whenever you are
+        unsure, FIRST look for the answer in the mission, the business context and the questions already
+        answered. If they do NOT settle it, ask instead of guessing — when several concrete options lead
+        to different outcomes, when you need data you were not given (account, product, quantity,
+        address), when the mission is vague or does not match this app, when the page is in a state the
+        mission did not anticipate, when you are stuck, or before giving up with "missionFailed".
+        Never ask about what you can settle yourself (equivalent wording, whether an element exists,
+        permission to continue) or anything already answered. One question at a time, naming the options
+        and what each would do.
 
         ── CHOOSING THE EXACT ELEMENT ───────────────────────────────────────
         - "target" MUST be copied VERBATIM from the snapshot — a real testid or a real visible name
@@ -71,10 +85,9 @@ public static class MissionAgentPrompts
 
         ── RECOVERING FROM PROBLEMS ─────────────────────────────────────────
         - If a click or type is REJECTED ("could not click/type"), the element is probably hidden or
-          covered by a modal/overlay (login/OTP, cookie, location or promo popup). Do NOT flail at
-          other elements — first dismiss the blocker: press Escape, or click its close control
-          ("✕", "Close", "Skip", "Not now", "No thanks", "Maybe later"), then retry. Never log in
-          unless the mission tells you to; otherwise continue as a guest.
+          covered by a popup, modal or banner. Do NOT flail at other elements — deal with the blocker
+          first. How to deal with it (close it, fill it in, sign in, pick an option) is a decision: take
+          it from the mission, the business context or an answered question; if none of them says, "ask".
         - If your previous action had NO effect ("the page did not change"), that control is inert.
           Do NOT repeat it — pick a DIFFERENT, more specific element or a different approach.
 
@@ -104,10 +117,11 @@ public static class MissionAgentPrompts
         string history,
         int turn,
         int maxTurns,
-        string? businessContext = null)
+        string? businessContext = null,
+        string? answeredQuestions = null)
     {
         const int maxSnapshotChars = 12_000;
-        const int maxContextChars = 4_000;
+        const int maxContextChars = 6_000;
 
         var snap = snapshot.Length > maxSnapshotChars
             ? snapshot[..maxSnapshotChars] + "\n... (truncated)"
@@ -117,17 +131,15 @@ public static class MissionAgentPrompts
         // what the app's terminology means and which flows are valid, so it targets the right control
         // instead of inferring everything from the UI alone.
         var context = string.Empty;
-        if (!string.IsNullOrWhiteSpace(businessContext))
+        var relevant = BusinessContextSelector.Select(businessContext, mission, maxContextChars);
+        if (relevant.Length > 0)
         {
-            var trimmed = businessContext.Length > maxContextChars
-                ? businessContext[..maxContextChars] + "\n... (truncated)"
-                : businessContext;
-
             context = $"""
 
-                Business context for this application (domain knowledge from the project's documents —
-                use it to interpret terminology and choose the correct flow; never type it into the page):
-                {trimmed}
+                Business context for this application (the parts of the project's documents relevant to this
+                mission — use it to interpret terminology, pick data and choose the correct flow before asking;
+                never type it into the page):
+                {relevant}
 
                 """;
         }
@@ -136,6 +148,7 @@ public static class MissionAgentPrompts
             Mission: {mission}
             Current URL: {currentUrl}
             Turn: {turn} of {maxTurns}
+            {(string.IsNullOrWhiteSpace(answeredQuestions) ? "" : $"Questions already answered by the user (settled — do not ask again):\n{answeredQuestions}\n")}
             {context}
             Page snapshot (choose targets ONLY from these elements):
             {snap}

@@ -11,8 +11,13 @@ public sealed class UpdateEnvironmentVariablesCommandHandler
     : IRequestHandler<UpdateEnvironmentVariablesCommand, IReadOnlyList<EnvironmentVariableDto>>
 {
     private readonly IApplicationDbContext _db;
+    private readonly ISecretProtector _protector;
 
-    public UpdateEnvironmentVariablesCommandHandler(IApplicationDbContext db) => _db = db;
+    public UpdateEnvironmentVariablesCommandHandler(IApplicationDbContext db, ISecretProtector protector)
+    {
+        _db = db;
+        _protector = protector;
+    }
 
     public async Task<IReadOnlyList<EnvironmentVariableDto>> Handle(
         UpdateEnvironmentVariablesCommand request,
@@ -28,8 +33,11 @@ public sealed class UpdateEnvironmentVariablesCommandHandler
         var target = environments.FirstOrDefault(e => e.Id == request.EnvironmentId)
             ?? throw new NotFoundException(nameof(EnvEntity), request.EnvironmentId);
 
+        var priorTarget = EnvironmentVariableSerialization.ParseStored(target.VariablesJson)
+            .ToDictionary(v => v.Key, v => v, StringComparer.Ordinal);
+
         // Normalize the incoming variables for the target environment: trim keys, drop empty, last wins.
-        var targetVars = new Dictionary<string, EnvironmentVariableDto>(StringComparer.Ordinal);
+        var targetVars = new Dictionary<string, StoredEnvironmentVariable>(StringComparer.Ordinal);
         foreach (var variable in request.Variables)
         {
             var key = variable.Key?.Trim();
@@ -37,23 +45,22 @@ public sealed class UpdateEnvironmentVariablesCommandHandler
             {
                 continue;
             }
-            targetVars[key] = new EnvironmentVariableDto
-            {
-                Key = key,
-                Value = variable.Value,
-                Type = EnvironmentVariableSerialization.NormalizeType(variable.Type),
-            };
+
+            priorTarget.TryGetValue(key, out var prior);
+            var type = EnvironmentVariableSerialization.NormalizeType(variable.Type);
+            targetVars[key] = type == EnvironmentVariableSerialization.SecretType
+                ? MergeSecret(key, variable.Value, prior)
+                : new StoredEnvironmentVariable(key, type, variable.Value?.Trim() ?? string.Empty, null);
         }
-        target.VariablesJson = EnvironmentVariableSerialization.Serialize(targetVars.Values);
 
         // Union of all keys across every environment (target's types win — types are shared per key).
         var keyType = new Dictionary<string, string>(StringComparer.Ordinal);
-        var parsed = new Dictionary<Guid, Dictionary<string, EnvironmentVariableDto>>();
+        var parsed = new Dictionary<Guid, Dictionary<string, StoredEnvironmentVariable>>();
         foreach (var env in environments)
         {
             var vars = env.Id == target.Id
                 ? targetVars
-                : EnvironmentVariableSerialization.Parse(env.VariablesJson)
+                : EnvironmentVariableSerialization.ParseStored(env.VariablesJson)
                     .ToDictionary(v => v.Key, v => v, StringComparer.Ordinal);
             parsed[env.Id] = vars;
             foreach (var kv in vars)
@@ -75,26 +82,42 @@ public sealed class UpdateEnvironmentVariablesCommandHandler
             {
                 if (!vars.TryGetValue(key, out var existing))
                 {
-                    vars[key] = new EnvironmentVariableDto { Key = key, Value = string.Empty, Type = type };
+                    vars[key] = new StoredEnvironmentVariable(key, type, string.Empty, null);
                     changed = true;
                 }
                 else if (!string.Equals(existing.Type, type, StringComparison.Ordinal))
                 {
-                    vars[key] = existing with { Type = type };
+                    // Demoting a secret never reveals it; every other type change keeps the value.
+                    vars[key] = existing.IsSecret && type != EnvironmentVariableSerialization.SecretType
+                        ? new StoredEnvironmentVariable(key, type, string.Empty, null)
+                        : existing with { Type = type };
                     changed = true;
                 }
             }
 
             if (changed || env.Id == target.Id)
             {
-                env.VariablesJson = EnvironmentVariableSerialization.Serialize(vars.Values);
+                env.VariablesJson = EnvironmentVariableSerialization.SerializeStored(vars.Values, _protector);
             }
         }
 
         await _db.SaveChangesAsync(cancellationToken);
 
-        return parsed[target.Id].Values
+        return EnvironmentVariableSerialization.Parse(target.VariablesJson)
             .OrderBy(v => v.Key, StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    /// <summary>Secrets are write-only: null keeps what is stored, empty clears it, anything else replaces it.</summary>
+    private static StoredEnvironmentVariable MergeSecret(string key, string? value, StoredEnvironmentVariable? prior)
+    {
+        if (value is null)
+        {
+            return prior is null
+                ? new StoredEnvironmentVariable(key, EnvironmentVariableSerialization.SecretType, null, null)
+                : prior with { Type = EnvironmentVariableSerialization.SecretType };
+        }
+
+        return new StoredEnvironmentVariable(key, EnvironmentVariableSerialization.SecretType, value, null);
     }
 }

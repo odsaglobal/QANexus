@@ -58,7 +58,7 @@ export function OverviewTab({ projectId }: { projectId: string }) {
     }
     const discoveredPages = sessions.reduce((sum, s) => sum + s.pagesDiscovered, 0);
     const discoveredElements = sessions.reduce((sum, s) => sum + s.elementsDiscovered, 0);
-    const activeExplorations = sessions.filter((s) => s.status === 'Running' || s.status === 'Pending').length;
+    const activeExplorations = sessions.filter((s) => s.status === 'Running' || s.status === 'Pending' || s.status === 'AwaitingInput').length;
     return {
       businessDocCount: businessDocs.length,
       scenarioCount: scenarios.length,

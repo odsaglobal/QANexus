@@ -30,6 +30,11 @@ export async function getExplorationSession(
   return data;
 }
 
+/** Answers the question a paused (AwaitingInput) session is waiting on. */
+export async function answerExplorationQuestion(projectId: string, sessionId: string, answer: string): Promise<void> {
+  await apiClient.post(`/projects/${projectId}/explorer/sessions/${sessionId}/answer`, { answer });
+}
+
 export async function startExploration(payload: StartExplorationRequest): Promise<ExplorationSession> {
   const { data } = await apiClient.post<ExplorationSession>(
     `/projects/${payload.projectId}/explorer/sessions`,

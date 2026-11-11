@@ -83,6 +83,12 @@ public sealed class LlmOptions
     /// </summary>
     public int MaxTokens { get; set; } = 8192;
 
+    /// <summary>
+    /// How much of the page snapshot the exploration agent sends per turn. Lower it for small-context
+    /// local models (e.g. 6000 for an 8k-token model); raise it for long pages on large-context models.
+    /// </summary>
+    public int MaxSnapshotChars { get; set; } = 12000;
+
     private string RawEndpoint => !string.IsNullOrWhiteSpace(Endpoint) ? Endpoint.Trim() : BaseUrl.Trim();
 
     /// <summary>

@@ -97,7 +97,7 @@ public sealed class ExplorationBackgroundService : BackgroundService
             // Sessions left in Running were interrupted by the restart and cannot resume mid-browser-run.
             var orphaned = await db.ExplorationSessions
                 .IgnoreQueryFilters()
-                .Where(s => s.Status == ExplorationStatus.Running)
+                .Where(s => s.Status == ExplorationStatus.Running || s.Status == ExplorationStatus.AwaitingInput)
                 .ToListAsync(stoppingToken);
 
             foreach (var session in orphaned)

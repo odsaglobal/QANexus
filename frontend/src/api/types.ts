@@ -72,8 +72,10 @@ export interface CreateEnvironmentRequest {
 
 export interface EnvironmentVariable {
   key: string;
+  /** Always null for secrets on read. On save, null keeps the stored secret and '' clears it. */
   value: string | null;
-  type?: 'text' | 'secret';
+  type?: 'text' | 'secret' | 'vault';
+  hasValue?: boolean;
 }
 
 export interface PagedResult<T> {
@@ -332,7 +334,7 @@ export interface ProblemDetails {
 
 // ----- Application Explorer -----
 
-export type ExplorationStatus = 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Cancelled';
+export type ExplorationStatus = 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Cancelled' | 'AwaitingInput';
 
 export interface ExplorationSession {
   id: string;
@@ -352,6 +354,8 @@ export interface ExplorationSession {
   startedAtUtc?: string | null;
   completedAtUtc?: string | null;
   errorMessage?: string | null;
+  pendingQuestion?: string | null;
+  pendingQuestionContext?: string | null;
   createdAtUtc: string;
 }
 

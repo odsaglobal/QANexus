@@ -1,4 +1,4 @@
-# ATIP — Autonomous AI Test Intelligence Platform
+# Patterns.ai — Autonomous AI Test Intelligence Platform
 
 An enterprise, AI-first platform that behaves like an autonomous QA engineer:
 upload product documentation, point it at your application, and let AI agents
@@ -31,6 +31,7 @@ frontend/              # React 19 + TypeScript + Vite + Tailwind (shadcn/ui) +
                        #   TanStack Query + Zustand + React Router
 tools/
   mcp/                  # Local Playwright MCP server used by the exploration engine
+  vault/                # Local HashiCorp Vault dev server + setup script
   e2e/                  # Python harness to bulk-run/seed scenarios for regression
   testrail/             # Scripts to seed/sync TestRail test cases
 ```
@@ -45,8 +46,11 @@ Key backend building blocks:
 - **Auth** — Auth0 (OIDC/JWT bearer). The API validates tokens against your Auth0
   tenant; `ApiKeyAuthenticationHandler` also accepts an `X-Api-Key` header for
   CI/scripted access. RBAC via `SystemRole` + project-scoped `ProjectRole`.
-- **Secrets** — connection strings / credentials are encrypted at rest with
-  AES-256-GCM and a rotatable key id (envelope encryption).
+- **Secrets** — connection strings and secret environment variables are encrypted at rest with
+  AES-256-GCM and a rotatable key id, and are write-only through the API. Application
+  credentials can also live in **HashiCorp Vault** and are fetched only at run time. Secret
+  values are masked before anything reaches the AI, the live log or stored results — see
+  [Secrets & application credentials](#secrets--application-credentials).
 - **Validation** — FluentValidation runs in a MediatR pipeline behavior and maps
   to RFC 7807 problem details.
 - **AI exploration engine** — `ExplorerAgent` drives a headless Chromium browser
@@ -64,6 +68,7 @@ Key backend building blocks:
 | Frontend   | React 19, TypeScript, Vite, Tailwind CSS (shadcn/ui), TanStack Query, Zustand, React Router |
 | AI         | Any OpenAI-compatible endpoint (OpenAI, Azure OpenAI, LiteLLM, local LM Studio/Ollama) or Anthropic (Claude) |
 | Automation | Microsoft.Playwright (.NET) + Playwright MCP (Node, `@playwright/mcp`) |
+| Secrets    | AES-256-GCM at rest, HashiCorp Vault (KV v2, AppRole) |
 
 ---
 
@@ -76,6 +81,9 @@ Key backend building blocks:
 - An **Auth0** tenant (free tier is fine) — or reuse the baked-in dev defaults described below to get running immediately without creating your own tenant
 - (Optional) an API key for a real LLM provider — the platform requires one configured for
   AI features (requirement analysis, scenario generation, exploration); there is no offline mock
+- (Optional) **HashiCorp Vault** — to keep the tested application's credentials in Vault
+  (`brew tap hashicorp/tap && brew install hashicorp/tap/vault`, or the `vault` service in
+  `docker-compose.yml`)
 
 ## Getting started
 
@@ -201,6 +209,90 @@ npm run dev
 
 ---
 
+## Secrets & application credentials
+
+Four different sets of credentials are involved. They are never the same:
+
+| # | Credential | Used by | Lives in |
+|---|---|---|---|
+| 1 | Your Patterns.ai login | You, to use Patterns.ai | Auth0 |
+| 2 | Vault admin login (dev: root token `dev-root`) | You, to manage secrets | Vault |
+| 3 | Vault AppRole `RoleId` + `SecretId` | The Patterns.ai API, to read from Vault | .NET user-secrets / env vars |
+| 4 | **The tested app's username/password** | The explorer, typed into your app | Stored as data **inside** Vault (or as an encrypted *Secret* variable) |
+
+```mermaid
+flowchart LR
+  API[Patterns.ai API] -->|"AppRole (3)"| V[(Vault)]
+  V -->|"app login (4)"| API
+  API -->|"types (4) into"| AUT[Application under test]
+```
+
+### Environment variable types
+
+Environment → **Variables** binds `{{key}}` tokens used in scenario steps:
+
+| Type | Stored | Notes |
+|---|---|---|
+| Text | Plain | Shown and editable. |
+| Secret | AES-256-GCM encrypted in the database | Write-only: never returned by the API; leave blank to keep, clear with ✕. |
+| Vault | A reference `path#field` | Value is read from Vault when a run starts. Use the ✓ button to test the reference. |
+
+Secret and Vault values (and test-data columns named like `password`, `token`, `apiKey`, `otp`)
+are treated as secrets: the AI only ever sees `{{password}}` / `[secret:password]`, the real value
+is substituted at the moment it is typed into the browser, and logs, live view, step results and
+saved DOM snapshots are masked. Recorded steps keep the placeholder, so rotating a password in Vault
+needs no test changes.
+
+### Local Vault setup
+
+```bash
+brew tap hashicorp/tap && brew install hashicorp/tap/vault   # or: docker compose up -d vault
+
+tools/vault/dev-server.sh      # terminal 1 — in-memory dev Vault on 127.0.0.1:8200, root token dev-root
+tools/vault/setup-dev.sh       # terminal 2 — then restart the API
+```
+
+`setup-dev.sh` is idempotent. It enables KV v2 at `secret/`, creates a read-only policy
+`patternsai-read` (`secret/data/patternsai/*`), creates the AppRole `patternsai`, stores the API's `Vault:*`
+settings in .NET user-secrets (outside the repo), and seeds a demo secret per tenant at
+`secret/patternsai/<tenantId>/demo/saucedemo`.
+
+> Dev mode keeps everything in memory. After restarting Vault, rerun `setup-dev.sh` and restart the API.
+
+Vault UI: http://127.0.0.1:8200/ui → method **Token** → `dev-root`.
+
+### Using application credentials in a test
+
+1. Store the login under your tenant's folder (each tenant can only read `patternsai/<its tenantId>/…`):
+   ```bash
+   export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=dev-root
+   vault kv put secret/patternsai/<tenantId>/saucedemo/standard username=standard_user password=secret_sauce
+   ```
+2. In Patterns.ai, add environment variables of type **Vault**:
+   `username` → `saucedemo/standard#username`, `password` → `saucedemo/standard#password`.
+3. Write steps with the tokens, e.g. *Enter `{{username}}` into Username and `{{password}}` into
+   Password, then click Login.*
+
+### Vault configuration
+
+```jsonc
+"Vault": {
+  "Enabled": true,
+  "Address": "https://vault.example.com:8200",
+  "Namespace": "",                      // Vault Enterprise / HCP only
+  "MountPath": "secret",                 // KV v2 mount
+  "PathPrefix": "patternsai/{tenantId}", // per-tenant isolation; references are relative to this
+  "AuthMethod": "approle",               // or "token"
+  "RoleId": "…", "SecretId": "…",        // never commit — use env vars / user-secrets
+  "CacheSeconds": 60
+}
+```
+
+In production run Vault in server mode (TLS, auto-unseal) and pass credentials as environment
+variables, e.g. `Vault__RoleId` / `Vault__SecretId`.
+
+---
+
 ## AI provider configuration
 
 The exploration/generation features require a real LLM — there is no offline mock. Configure
@@ -252,7 +344,7 @@ Administration → API Keys in the UI).
 | GET/POST | `/projects` | List / create projects |
 | GET/PUT/DELETE | `/projects/{id}` | Get / update / soft-delete a project |
 | GET/POST/DELETE | `/projects/{id}/environments` | Manage environments |
-| GET/PUT | `/projects/{id}/environments/{envId}/variables` | Environment variables (Postman-style `{{key}}`) |
+| GET/PUT | `/projects/{id}/environments/{envId}/variables` | Environment variables (`{{key}}`; types text / secret / vault) |
 | GET/POST/DELETE | `/projects/{id}/environments/{envId}/test-data` | Environment-scoped test data sets |
 | GET/POST | `/projects/{id}/requirements` | List / upload (multipart) Business Context docs |
 | GET/POST | `/projects/{id}/scenarios` | List / create scenarios (manual, generated, imported) |
@@ -266,6 +358,8 @@ Administration → API Keys in the UI).
 | GET | `/projects/{id}/explorer/sessions/{id}` | Poll an exploration/run session's status & steps |
 | GET | `/dashboard/summary`, `/reports/summary` | Aggregate KPIs |
 | GET/POST | `/api-keys` | Manage CI API keys |
+| GET | `/secret-store/status` | Vault connectivity / authentication status |
+| POST | `/secret-store/verify` | Check a `path#field` reference resolves (never returns the value) |
 | GET | `/audit` | Tenant audit log |
 
 Live progress (browser frames, log lines, per-step results) streams over SignalR at `/hubs/exploration`.
@@ -296,6 +390,8 @@ dotnet test
   in one step; see step 1 of Getting started.
 - `tools/mcp/` — the local Playwright MCP server the exploration engine spawns as a subprocess.
   `playwright-mcp.sh` is the wrapper script referenced by `PlaywrightMcp:Command` in appsettings.
+- `tools/vault/dev-server.sh` / `setup-dev.sh` — local HashiCorp Vault for development; see
+  [Local Vault setup](#local-vault-setup).
 - `tools/e2e/run-all.py <projectId> <envId>` — bulk explore + replay every scenario in a project,
   useful as a regression sanity check.
 - `tools/testrail/seed-*.mjs` — create/replace TestRail test cases for the demo apps under `demo/`.
@@ -319,9 +415,16 @@ dotnet test
   provider's own error message.
 - **Local Postgres already running on 5432** — either point `ConnectionStrings:Postgres` at the
   docker-compose instance (port 5433) instead, or stop the local instance.
+- **"Vault variable not resolved" in the run log / Vault warning in the Variables dialog** — check
+  `GET /api/v1/secret-store/status`. *Unreachable*: start `tools/vault/dev-server.sh`.
+  *AppRole login failed*: dev Vault was restarted — rerun `tools/vault/setup-dev.sh` and restart the
+  API. *Not found*: the secret must live under `secret/patternsai/<tenantId>/` and the reference is
+  relative to that folder.
 
 ## Roadmap
 
+- Login profiles: named accounts (`runAs: admin`) backed by Vault, with automatic login, MFA (TOTP)
+  and reusable browser sessions
 - Knowledge Graph visualization (backend + UI exist but are currently unwired from navigation)
 - Locator-quarantine dashboards / trend analytics on top of the existing self-healing engine
 - CI/CD pipeline templates (Jenkins/GitHub Actions) and Docker/Kubernetes/Helm deployment manifests

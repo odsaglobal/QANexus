@@ -1,4 +1,5 @@
 using ATIP.Application.Common.Models;
+using ATIP.Application.Features.Explorer.Commands.AnswerExplorationQuestion;
 using ATIP.Application.Features.Explorer.Commands.CancelExploration;
 using ATIP.Application.Features.Explorer.Commands.StartExploration;
 using ATIP.Application.Features.Explorer.Dtos;
@@ -66,6 +67,17 @@ public sealed class ExplorerController : ApiControllerBase
         return NoContent();
     }
 
+    /// <summary>Answers the question a paused (AwaitingInput) session is waiting on; it resumes on the same page.</summary>
+    [HttpPost("sessions/{sessionId:guid}/answer")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> AnswerSession(Guid projectId, Guid sessionId, [FromBody] AnswerExplorationQuestionRequest body, CancellationToken ct)
+    {
+        await Mediator.Send(new AnswerExplorationQuestionCommand(projectId, sessionId, body.Answer), ct);
+        return NoContent();
+    }
+
     /// <summary>
     /// Every persisted step result for the session (across all scenarios it ran), in execution order,
     /// each with a screenshot reference and validation detail — the full execution trace for the
@@ -103,3 +115,5 @@ public sealed class ExplorerController : ApiControllerBase
         return Ok(result);
     }
 }
+
+public sealed record AnswerExplorationQuestionRequest(string Answer);

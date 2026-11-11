@@ -116,21 +116,81 @@ public class LlmClientJsonParsingTests
         handler.RequestCount.Should().Be(2);
     }
 
+    [Fact]
+    public async Task Drops_temperature_for_models_that_reject_it_and_remembers()
+    {
+        var handler = new SequencedHttpMessageHandler(
+            new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent(
+                    """{"error":{"message":"Unsupported value: 'temperature' does not support 0.4 with this model. Only the default (1) value is supported."}}""",
+                    Encoding.UTF8, "application/json"),
+            },
+            Ok("""{"choices":[{"message":{"content":"{\"a\":1}"}}]}"""),
+            Ok("""{"choices":[{"message":{"content":"{\"a\":2}"}}]}"""));
+
+        var client = new LlmClient(new StubHttpClientFactory(handler), OpenAi($"reasoning-{Guid.NewGuid():N}"), NullLogger<LlmClient>.Instance);
+
+        (await client.CompleteAsync("s", "u")).Should().Be("{\"a\":1}");
+        (await client.CompleteAsync("s", "u")).Should().Be("{\"a\":2}");
+
+        handler.Bodies.Should().HaveCount(3);
+        handler.Bodies[0].Should().Contain("\"temperature\"");
+        handler.Bodies[1].Should().NotContain("\"temperature\"");
+        handler.Bodies[2].Should().NotContain("\"temperature\"");
+    }
+
+    [Fact]
+    public async Task Reads_content_given_as_an_array_of_text_parts()
+    {
+        var handler = new SequencedHttpMessageHandler(
+            Ok("""{"choices":[{"message":{"content":[{"type":"text","text":"{\"a\":"},{"type":"text","text":"1}"}]}}]}"""));
+
+        var client = new LlmClient(new StubHttpClientFactory(handler), OpenAi($"parts-{Guid.NewGuid():N}"), NullLogger<LlmClient>.Instance);
+
+        (await client.CompleteAsync("s", "u")).Should().Be("{\"a\":1}");
+    }
+
+    [Fact]
+    public async Task Falls_back_to_reasoning_content_when_content_is_empty()
+    {
+        var handler = new SequencedHttpMessageHandler(
+            Ok("""{"choices":[{"message":{"content":"","reasoning_content":"thinking... {\"action\":\"click\"}"}}]}"""));
+
+        var client = new LlmClient(new StubHttpClientFactory(handler), OpenAi($"r1-{Guid.NewGuid():N}"), NullLogger<LlmClient>.Instance);
+
+        (await client.CompleteAsync("s", "u")).Should().Contain("{\"action\":\"click\"}");
+    }
+
+    private static HttpResponseMessage Ok(string body) =>
+        new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+
+    private static IOptions<LlmOptions> OpenAi(string model) => Options.Create(new LlmOptions
+    {
+        Provider = "openai",
+        BaseUrl = "http://localhost:1234/v1",
+        Model = model,
+        TimeoutMs = 10000,
+    });
+
     private sealed class SequencedHttpMessageHandler : HttpMessageHandler
     {
         private readonly Queue<HttpResponseMessage> _responses;
 
         public int RequestCount { get; private set; }
 
+        public List<string> Bodies { get; } = new();
+
         public SequencedHttpMessageHandler(params HttpResponseMessage[] responses)
         {
             _responses = new Queue<HttpResponseMessage>(responses);
         }
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             RequestCount++;
-            return Task.FromResult(_responses.Count > 0 ? _responses.Dequeue() : new HttpResponseMessage(HttpStatusCode.InternalServerError));
+            Bodies.Add(request.Content is null ? string.Empty : await request.Content.ReadAsStringAsync(cancellationToken));
+            return _responses.Count > 0 ? _responses.Dequeue() : new HttpResponseMessage(HttpStatusCode.InternalServerError);
         }
     }
 

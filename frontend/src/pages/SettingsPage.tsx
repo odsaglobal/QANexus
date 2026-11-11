@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Save } from 'lucide-react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Loader2, Save } from 'lucide-react';
+import { getTenantSettings, updateTenantSettings } from '../api/tenant';
+import { getErrorMessage } from '../lib/apiClient';
+import { cn } from '../lib/utils';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Input } from '../components/ui/input';
@@ -16,6 +20,57 @@ interface Preferences {
 }
 
 const storageKey = 'atip.settings.preferences';
+
+const retryOptions = [0, 1, 2, 3];
+
+/** Workspace-wide (server-side) setting: re-run failed tests automatically during Run. */
+function RetrySettingCard() {
+  const queryClient = useQueryClient();
+  const settingsQuery = useQuery({ queryKey: ['tenant-settings'], queryFn: getTenantSettings });
+  const saveMutation = useMutation({
+    mutationFn: (failedTestRetries: number) => updateTenantSettings({ failedTestRetries }),
+    onSuccess: (data) => queryClient.setQueryData(['tenant-settings'], data),
+  });
+
+  const current = saveMutation.isPending ? saveMutation.variables : settingsQuery.data?.failedTestRetries;
+
+  return (
+    <Card>
+      <CardHeader><CardTitle className="text-base">Retry failed tests</CardTitle></CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-xs text-muted-foreground max-w-xl">
+          When a test fails during a run, run it again in a fresh browser session up to this many times. Only the
+          last attempt is reported, and a test that passes on a retry is flagged as possibly flaky in the run log.
+        </p>
+        <div className="flex items-center gap-3">
+          <div className="inline-flex rounded-md border border-border p-0.5" role="radiogroup" aria-label="Retries for failed tests">
+            {retryOptions.map((n) => (
+              <button
+                key={n}
+                type="button"
+                role="radio"
+                aria-checked={current === n}
+                disabled={settingsQuery.isLoading || saveMutation.isPending}
+                onClick={() => saveMutation.mutate(n)}
+                className={cn(
+                  'rounded px-3 py-1 text-sm transition-colors disabled:opacity-60',
+                  current === n ? 'bg-primary text-primary-foreground' : 'text-foreground hover:bg-muted',
+                )}
+              >
+                {n === 0 ? 'Off' : `${n}×`}
+              </button>
+            ))}
+          </div>
+          {saveMutation.isPending && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+          {saveMutation.isSuccess && !saveMutation.isPending && <span className="text-xs text-muted-foreground">Saved</span>}
+        </div>
+        {(settingsQuery.isError || saveMutation.isError) && (
+          <p className="text-xs text-red-600">{getErrorMessage(saveMutation.error ?? settingsQuery.error)}</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 const defaultPrefs: Preferences = {
   orgName: 'Patterns.ai Organization',
@@ -89,7 +144,8 @@ export function SettingsPage() {
           </Card>
         </TabsContent>
 
-        <TabsContent value="execution">
+        <TabsContent value="execution" className="space-y-4">
+          <RetrySettingCard />
           <Card>
             <CardHeader><CardTitle className="text-base">Execution Behavior</CardTitle></CardHeader>
             <CardContent className="space-y-5">

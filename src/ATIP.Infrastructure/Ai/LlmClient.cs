@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -27,6 +28,16 @@ public sealed class LlmClient : ILlmClient
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly LlmOptions _options;
     private readonly ILogger<LlmClient> _logger;
+
+    // Parameters a given endpoint+model has rejected, remembered for the process lifetime so only the
+    // first call pays for the 400. Keyed by URL and model because one gateway can front many models.
+    private static readonly ConcurrentDictionary<string, ModelQuirks> Quirks = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed class ModelQuirks
+    {
+        public volatile bool NoTemperature;
+        public volatile bool NoResponseFormat;
+    }
 
     public LlmClient(
         IHttpClientFactory httpClientFactory,
@@ -62,25 +73,26 @@ public sealed class LlmClient : ILlmClient
         CancellationToken cancellationToken)
     {
         var client = _httpClientFactory.CreateClient(HttpClientName);
+        var quirks = Quirks.GetOrAdd($"{_options.ChatCompletionsUrl}|{_options.Model}", _ => new ModelQuirks());
 
-        // Whether to ask for strict JSON via response_format. Not every OpenAI-compatible server honors
-        // (or even accepts) this field — some older/local builds (llama.cpp server, some LM Studio/Ollama
-        // versions) 400 on it outright. Dropped for exactly ONE retry below if that happens; the prompts
-        // already instruct "respond with JSON only" and JsonExtraction tolerates the rest.
-        var includeResponseFormat = jsonMode && !_options.IsAnthropic;
-        var droppedResponseFormat = false;
+        // Not every OpenAI-compatible model accepts every parameter: reasoning models (o-series, GPT-5,
+        // DeepSeek-R1) reject a non-default temperature, and older/local servers (llama.cpp, some LM
+        // Studio/Ollama builds) reject response_format. A 400 naming one of these drops it and retries;
+        // the prompts already demand JSON and JsonExtraction tolerates the rest.
+        var adaptations = 0;
 
         var maxAttempts = Math.Max(1, _options.MaxRetries);
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            var includeResponseFormat = jsonMode && !_options.IsAnthropic && !quirks.NoResponseFormat;
             object request = _options.IsAnthropic
                 ? BuildAnthropicRequest(systemPrompt, userPrompt, jsonMode)
                 : new ChatCompletionRequest
                 {
                     Model = _options.Model,
-                    Temperature = _options.Temperature,
+                    Temperature = quirks.NoTemperature ? null : _options.Temperature,
                     ResponseFormat = includeResponseFormat ? new ResponseFormat { Type = "json_object" } : null,
                     Messages =
                     [
@@ -112,16 +124,27 @@ public sealed class LlmClient : ILlmClient
                         continue;
                     }
 
-                    if (includeResponseFormat && !droppedResponseFormat && (int)response.StatusCode == 400
-                        && detail.Contains("response_format", StringComparison.OrdinalIgnoreCase))
+                    if ((int)response.StatusCode == 400 && !_options.IsAnthropic && adaptations < 2)
                     {
-                        _logger.LogWarning(
-                            "LLM endpoint {Endpoint} rejected response_format (model/server likely doesn't " +
-                            "support it); retrying once as a plain completion.", _options.ChatCompletionsUrl);
-                        includeResponseFormat = false;
-                        droppedResponseFormat = true;
-                        maxAttempts++; // guarantee this fallback gets its own attempt regardless of MaxRetries
-                        continue;
+                        var dropTemperature = !quirks.NoTemperature
+                            && detail.Contains("temperature", StringComparison.OrdinalIgnoreCase);
+                        var dropResponseFormat = includeResponseFormat
+                            && (detail.Contains("response_format", StringComparison.OrdinalIgnoreCase)
+                                || detail.Contains("json_object", StringComparison.OrdinalIgnoreCase));
+
+                        if (dropTemperature || dropResponseFormat)
+                        {
+                            quirks.NoTemperature |= dropTemperature;
+                            quirks.NoResponseFormat |= dropResponseFormat;
+                            adaptations++;
+                            maxAttempts++; // the adaptation gets its own attempt regardless of MaxRetries
+                            _logger.LogWarning(
+                                "LLM {Model} at {Endpoint} rejected {Params}; retrying without it and remembering this for later calls.",
+                                _options.Model,
+                                _options.ChatCompletionsUrl,
+                                string.Join(" and ", new[] { dropTemperature ? "temperature" : null, dropResponseFormat ? "response_format" : null }.Where(p => p is not null)));
+                            continue;
+                        }
                     }
 
                     _logger.LogError(
@@ -241,7 +264,7 @@ public sealed class LlmClient : ILlmClient
         public required IReadOnlyList<ChatMessage> Messages { get; init; }
 
         [JsonPropertyName("temperature")]
-        public double Temperature { get; init; }
+        public double? Temperature { get; init; }
 
         [JsonPropertyName("response_format")]
         public ResponseFormat? ResponseFormat { get; init; }
@@ -447,13 +470,51 @@ public sealed class LlmClient : ILlmClient
             return false;
         }
 
-        if (!message.TryGetProperty("content", out var contentElement)
-            || contentElement.ValueKind != JsonValueKind.String)
+        content = ReadMessageText(message, "content");
+
+        // Reasoning models served through some gateways (DeepSeek-R1, Qwen QwQ on vLLM) put everything in
+        // a separate reasoning field and leave content empty; the JSON is usually at its end.
+        if (string.IsNullOrWhiteSpace(content))
         {
-            return false;
+            content = ReadMessageText(message, "reasoning_content") ?? ReadMessageText(message, "reasoning");
         }
 
-        content = contentElement.GetString();
         return !string.IsNullOrWhiteSpace(content);
+    }
+
+    /// <summary>Reads a message field that may be a string or an array of <c>{type:"text",text}</c> parts.</summary>
+    private static string? ReadMessageText(JsonElement message, string property)
+    {
+        if (!message.TryGetProperty(property, out var value))
+        {
+            return null;
+        }
+
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            return value.GetString();
+        }
+
+        if (value.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var sb = new System.Text.StringBuilder();
+        foreach (var part in value.EnumerateArray())
+        {
+            if (part.ValueKind == JsonValueKind.String)
+            {
+                sb.Append(part.GetString());
+            }
+            else if (part.ValueKind == JsonValueKind.Object
+                && part.TryGetProperty("text", out var text)
+                && text.ValueKind == JsonValueKind.String)
+            {
+                sb.Append(text.GetString());
+            }
+        }
+
+        return sb.Length == 0 ? null : sb.ToString();
     }
 }

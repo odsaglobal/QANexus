@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Trash2, ExternalLink, Loader2, Database, KeyRound, Pencil } from 'lucide-react';
+import { Plus, Trash2, ExternalLink, Loader2, Database, KeyRound, Pencil, Paperclip } from 'lucide-react';
 import type { EnvironmentModel, EnvironmentType } from '../../api/types';
 import { createEnvironment, deleteEnvironment, listEnvironments, updateEnvironment } from '../../api/environments';
 import { getErrorMessage } from '../../lib/apiClient';
@@ -18,6 +18,7 @@ import { Switch } from '../../components/ui/switch';
 import { useConfirm } from '../../components/ui/confirm-dialog';
 import { EnvironmentTestDataDialog } from './EnvironmentTestDataDialog';
 import { EnvironmentVariablesDialog } from './EnvironmentVariablesDialog';
+import { TestFilesDialog } from './TestFilesDialog';
 
 const environmentTypes: EnvironmentType[] = ['Development', 'Test', 'Staging', 'Production', 'Sandbox'];
 
@@ -28,6 +29,7 @@ export function EnvironmentsTab({ projectId }: { projectId: string }) {
   const [editing, setEditing] = useState<EnvironmentModel | null>(null);
   const [testDataFor, setTestDataFor] = useState<EnvironmentModel | null>(null);
   const [variablesFor, setVariablesFor] = useState<EnvironmentModel | null>(null);
+  const [testFilesOpen, setTestFilesOpen] = useState(false);
   const [form, setForm] = useState<{ name: string; type: EnvironmentType; baseUrl: string; isDefault: boolean }>({
     name: '', type: 'Staging', baseUrl: '', isDefault: false,
   });
@@ -73,9 +75,14 @@ export function EnvironmentsTab({ projectId }: { projectId: string }) {
         title="Environments"
         description="Deployment targets explorations and executions run against."
         actions={(
-          <Button variant="outline" size="sm" onClick={openCreate}>
-            <Plus className="h-4 w-4 mr-1.5" /> Add environment
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setTestFilesOpen(true)}>
+              <Paperclip className="h-4 w-4 mr-1.5" /> Test files
+            </Button>
+            <Button variant="outline" size="sm" onClick={openCreate}>
+              <Plus className="h-4 w-4 mr-1.5" /> Add environment
+            </Button>
+          </div>
         )}
       />
       <Card>
@@ -197,6 +204,8 @@ export function EnvironmentsTab({ projectId }: { projectId: string }) {
           onClose={() => setVariablesFor(null)}
         />
       )}
+
+      {testFilesOpen && <TestFilesDialog projectId={projectId} onClose={() => setTestFilesOpen(false)} />}
     </div>
   );
 }

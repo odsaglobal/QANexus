@@ -1,3 +1,4 @@
+using ATIP.Application.Common.Interfaces;
 using ATIP.Application.Engine.Contracts;
 using ATIP.Application.Engine.Model;
 using ATIP.Application.Features.Explorer.Agent;
@@ -25,6 +26,7 @@ public sealed class PlaywrightWebDriver : ITestDriver
         TestActionKind.Click, TestActionKind.DoubleClick, TestActionKind.RightClick, TestActionKind.Hover,
         TestActionKind.Type, TestActionKind.Clear, TestActionKind.Press, TestActionKind.Select,
         TestActionKind.Check, TestActionKind.Uncheck, TestActionKind.Upload, TestActionKind.ScrollTo,
+        TestActionKind.DragAndDrop,
         TestActionKind.Wait, TestActionKind.WaitFor,
         TestActionKind.SwitchTab, TestActionKind.NewTab, TestActionKind.CloseTab, TestActionKind.SwitchFrame,
         TestActionKind.HandleDialog,
@@ -34,6 +36,7 @@ public sealed class PlaywrightWebDriver : ITestDriver
 
     private readonly PlaywrightBrowserService _browser;
     private readonly ILocatorResolver _resolver;
+    private readonly ITestFileStore _testFiles;
     private readonly ILogger<PlaywrightWebDriver> _logger;
     private readonly bool _ownsBrowser;
     private bool _opened;
@@ -41,11 +44,13 @@ public sealed class PlaywrightWebDriver : ITestDriver
     public PlaywrightWebDriver(
         PlaywrightBrowserService browser,
         ILocatorResolver resolver,
+        ITestFileStore testFiles,
         ILogger<PlaywrightWebDriver> logger,
         bool ownsBrowser = true)
     {
         _browser = browser;
         _resolver = resolver;
+        _testFiles = testFiles;
         _logger = logger;
         _ownsBrowser = ownsBrowser;
     }
@@ -369,12 +374,37 @@ public sealed class PlaywrightWebDriver : ITestDriver
                 break;
 
             case TestActionKind.Upload:
-                var paths = (action.Option(ActionOptionNames.FilePaths) ?? value ?? string.Empty)
-                    .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-                if (!await _browser.UploadFilesAsync(locator, paths, ct))
+                // Only files from this project's test-file store: a recording must never be able to send
+                // arbitrary files from the server to the site under test.
+                var names = (action.Option(ActionOptionNames.FilePaths) ?? value ?? string.Empty)
+                    .Split(['\n', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                var paths = names.Select(n => _testFiles.Resolve(context.ProjectId, Path.GetFileName(n))).ToList();
+                if (paths.Count == 0 || paths.Any(p => p is null))
                 {
-                    return ActionResult.Fail("Upload failed: one or more files do not exist.");
+                    var missing = names.Where((_, i) => paths[i] is null);
+                    return ActionResult.Fail($"Upload failed: test file(s) not found in this project: {string.Join(", ", missing)}.");
                 }
+
+                if (!await _browser.UploadFilesAsync(locator, paths!, ct))
+                {
+                    return ActionResult.Fail("Upload failed: the element is not a file input and did not open a file chooser.");
+                }
+                break;
+
+            case TestActionKind.DragAndDrop:
+                var dropDescriptor = action.Option(ActionOptionNames.DropTarget);
+                if (string.IsNullOrWhiteSpace(dropDescriptor))
+                {
+                    return ActionResult.Fail("Drag and drop needs a drop target.");
+                }
+
+                var drop = await ResolveElementAsync(new ElementTarget { Descriptor = dropDescriptor }, TestActionKind.Hover, context, timeout, ct);
+                if (drop.Locator is null)
+                {
+                    return ActionResult.Fail($"Could not find drop target '{dropDescriptor}' on {_browser.CurrentUrl}.");
+                }
+
+                await locator.DragToAsync(drop.Locator, new LocatorDragToOptions { Timeout = timeout });
                 break;
 
             case TestActionKind.WaitFor:
@@ -458,34 +488,51 @@ public sealed class PlaywrightWebDriver : ITestDriver
             candidates.AddRange(DescriptorCandidates(target.Descriptor!, kind));
         }
 
-        // A short per-candidate budget: the list is a search, and spending the full timeout on each
-        // miss turns a nine-candidate lookup into a minute of waiting. The last candidate gets the
-        // full budget so a genuinely slow page still has its chance.
-        var probeTimeout = Math.Max(1000, Math.Min(timeout, 3000));
-
-        // First pass demands an unambiguous match, so a precise candidate later in the list beats a
-        // loose one earlier. Only if every candidate is ambiguous or absent does the second pass
-        // accept the first match — real pages repeat markup, and refusing outright would fail
-        // scenarios that a human would consider perfectly well specified.
-        for (var pass = 0; pass < 2; pass++)
+        // Every candidate is checked against what is rendered NOW, round after round, until one
+        // matches or the timeout passes. Waiting on each candidate in turn made a missing guess cost
+        // seconds; polling them together means the wait is only as long as the element takes to appear.
+        // A unique match always wins; an ambiguous one is accepted only after a short grace period,
+        // so real pages that repeat markup still run.
+        const int ambiguousGraceMs = 1000;
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        while (true)
         {
             for (var i = 0; i < candidates.Count; i++)
             {
-                var candidate = candidates[i];
-                var budget = i == candidates.Count - 1 ? timeout : probeTimeout;
-
-                var locator = await _browser.ResolveAsync(
-                    candidate.Strategy,
-                    candidate.Value,
-                    target.Index,
-                    pass == 0 ? budget : probeTimeout,
-                    allowAmbiguous: pass == 1,
-                    ct);
-
+                var locator = await _browser.ResolveAsync(candidates[i].Strategy, candidates[i].Value, target.Index, 0, allowAmbiguous: false, ct);
                 if (locator is not null)
                 {
-                    return new Resolution(locator, candidate, candidates, i);
+                    return new Resolution(locator, candidates[i], candidates, i);
                 }
+            }
+
+            if (watch.ElapsedMilliseconds >= ambiguousGraceMs)
+            {
+                for (var i = 0; i < candidates.Count; i++)
+                {
+                    var locator = await _browser.ResolveAsync(candidates[i].Strategy, candidates[i].Value, target.Index, 0, allowAmbiguous: true, ct);
+                    if (locator is not null)
+                    {
+                        return new Resolution(locator, candidates[i], candidates, i);
+                    }
+                }
+            }
+
+            if (watch.ElapsedMilliseconds >= timeout)
+            {
+                break;
+            }
+
+            await Task.Delay(250, ct);
+        }
+
+        // Elements inside iframes are invisible to the top-level search above.
+        for (var i = 0; i < candidates.Count; i++)
+        {
+            var inFrame = await _browser.ResolveInChildFramesAsync(candidates[i].Strategy, candidates[i].Value, 1000, ct);
+            if (inFrame is not null)
+            {
+                return new Resolution(inFrame, candidates[i], candidates, i);
             }
         }
 

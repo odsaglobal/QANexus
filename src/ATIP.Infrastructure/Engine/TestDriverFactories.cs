@@ -16,12 +16,14 @@ public sealed class WebDriverFactory : ITestDriverFactory
 {
     private readonly WebBrowserSession _session;
     private readonly ILocatorResolver _resolver;
+    private readonly ITestFileStore _testFiles;
     private readonly ILoggerFactory _loggers;
 
-    public WebDriverFactory(WebBrowserSession session, ILocatorResolver resolver, ILoggerFactory loggers)
+    public WebDriverFactory(WebBrowserSession session, ILocatorResolver resolver, ITestFileStore testFiles, ILoggerFactory loggers)
     {
         _session = session;
         _resolver = resolver;
+        _testFiles = testFiles;
         _loggers = loggers;
     }
 
@@ -33,8 +35,8 @@ public sealed class WebDriverFactory : ITestDriverFactory
 
         return _session.Browser is { } existing
             // Borrowed: the explorer still owns its lifetime, so the driver must not dispose it.
-            ? new PlaywrightWebDriver(existing, _resolver, logger, ownsBrowser: false)
-            : new PlaywrightWebDriver(new PlaywrightBrowserService(), _resolver, logger, ownsBrowser: true);
+            ? new PlaywrightWebDriver(existing, _resolver, _testFiles, logger, ownsBrowser: false)
+            : new PlaywrightWebDriver(new PlaywrightBrowserService(), _resolver, _testFiles, logger, ownsBrowser: true);
     }
 }
 

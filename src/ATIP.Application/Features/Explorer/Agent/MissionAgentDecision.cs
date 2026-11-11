@@ -36,4 +36,10 @@ public sealed class MissionAgentDecision
 
     /// <summary>True when the agent concludes the mission cannot be completed on this app.</summary>
     public bool MissionFailed { get; set; }
+
+    /// <summary>For "ask": one concrete question for the person watching.</summary>
+    public string? Question { get; set; }
+
+    /// <summary>For "ask": the competing options the agent sees.</summary>
+    public string? QuestionContext { get; set; }
 }

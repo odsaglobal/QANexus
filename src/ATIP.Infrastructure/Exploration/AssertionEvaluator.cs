@@ -30,7 +30,7 @@ public static class AssertionEvaluator
         switch (source)
         {
             case "url":
-                values = new[] { browser.CurrentUrl ?? string.Empty };
+                values = UrlVariants(browser.CurrentUrl ?? string.Empty);
                 break;
 
             case "title":
@@ -307,6 +307,39 @@ public static class AssertionEvaluator
         value == Math.Floor(value)
             ? value.ToString("0", CultureInfo.InvariantCulture)
             : value.ToString("0.##", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// The URL as the browser reports it plus a readable form. Sites routinely percent-encode filter
+    /// parameters, sometimes twice (Flipkart: <c>p%5B%5D=facets.brand%255B%255D%3DHP</c>), and use
+    /// <c>name[]=</c> array notation, so an expectation written as <c>facets.brand=HP</c> must be
+    /// compared against <c>facets.brand=HP</c>, not the wire encoding.
+    /// </summary>
+    internal static IReadOnlyList<string> UrlVariants(string url)
+    {
+        var decoded = url;
+        for (var i = 0; i < 3; i++)
+        {
+            string next;
+            try
+            {
+                next = Uri.UnescapeDataString(decoded.Replace('+', ' '));
+            }
+            catch (UriFormatException)
+            {
+                break;
+            }
+
+            if (next == decoded)
+            {
+                break;
+            }
+
+            decoded = next;
+        }
+
+        decoded = decoded.Replace("[]", string.Empty);
+        return decoded == url ? new[] { url } : new[] { url, decoded };
+    }
 
     /// <summary>Renders observed values compactly — a report line, not a data dump.</summary>
     private static string Summarise(IReadOnlyList<string> values)
